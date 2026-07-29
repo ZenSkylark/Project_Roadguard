@@ -1,0 +1,8 @@
+rocm_env/
+runs/
+*.zip
+*.pt
+.vscode/
+__pycache__/
+*.pyc
+trafffic-violations-triple-riding-no-helmet-plate/
