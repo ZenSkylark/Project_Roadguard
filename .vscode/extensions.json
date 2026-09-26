@@ -1,0 +1,19 @@
+{
+  "recommendations": [
+    "ms-python.python",
+    "charliermarsh.ruff",
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "usernamehw.errorlens",
+    "bradlc.vscode-tailwindcss",
+    "dsznajder.es7-react-js-snippets",
+    "humao.rest-client",
+    "streetsidesoftware.code-spell-checker",
+    "Gruntfuggly.todo-tree",
+    "pkief.material-icon-theme",
+    "johnpapa.vscode-peacock",
+    "hediet.vscode-drawio",
+    "adpyke.codesnap",
+    "ms-vscode-remote.remote-ssh"
+  ]
+} 

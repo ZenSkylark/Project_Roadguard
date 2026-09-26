@@ -1,0 +1,33 @@
+# ---------- Virtual environments ----------
+*env/
+venv/
+
+# ---------- Python junk ----------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# ---------- Backend runtime data (NEVER upload evidence/DBs/secrets) ----------
+*.db
+*.sqlite3
+storage/
+.env
+
+# ---------- Simulator leftovers ----------
+sim_*.jpg
+
+# ---------- Model weights (too big for GitHub) ----------
+*.pt
+*.onnx
+*.rknn
+
+# ---------- Frontend ----------
+node_modules/
+dist/
+.eslintcache
+npm-debug.log*
+*.log
+
+# ---------- OS junk ----------
+Thumbs.db
+.DS_Store
