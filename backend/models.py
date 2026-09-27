@@ -12,7 +12,9 @@ class User(Base):
     position = Column(String, default="viewer")            # administrator|officer|viewer
     is_active = Column(Boolean, default=True)
     mfa_enabled = Column(Boolean, default=False)
-    mfa_secret = Column(String, nullable=True)
+    phone_number = Column(String, unique=True, nullable=True)
+    otp_hash = Column(String, nullable=True)
+    otp_expires = Column(DateTime, nullable=True)
     failed_logins = Column(Integer, default=0)
     locked_until = Column(DateTime, nullable=True)
     reset_token = Column(String, nullable=True)            # sha256 hash of token

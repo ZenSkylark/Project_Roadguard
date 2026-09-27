@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7         # A2: long-lived refresh
     REQUIRE_EMAIL_VERIFICATION: bool = False   # A3: flip True in production
     RATE_LIMIT_PER_MINUTE: int = 10          
+    SMS_PROVIDER: str = ""             # empty = dev mode (prints SMS to console)
     SMTP_HOST: str = ""            # empty = dev mode (prints emails to console)
     SMTP_PORT: int = 587
     SMTP_USER: str = ""

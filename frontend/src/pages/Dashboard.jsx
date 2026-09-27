@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, clearToken } from "../api/client.js";
 import ViolationCard from "../components/ViolationCard.jsx";
 import PlateModal from "../components/PlateModal.jsx";
+import OcrSelector from "../components/OcrSelector.jsx";
 
 async function fetchViolations(filter) {
   return api(`/violations${filter ? `?status=${filter}` : ""}`);
@@ -55,12 +56,13 @@ export default function Dashboard({ user, onLogout }) {
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between sticky top-0 z-40 shadow">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3"> 
           <span className="text-xl font-black">🛡️ ROADGUARD</span>
           <span className="text-xs bg-slate-700 px-2 py-1 rounded-full uppercase tracking-wide">{user.position}</span>
           <span className="text-xs text-slate-400 font-mono">{user.uid}</span>
         </div>
         <div className="flex items-center gap-3">
+          <OcrSelector user={user} />
           <select value={filter} onChange={(e) => setFilter(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-sm">
             <option value="">All statuses</option>

@@ -5,8 +5,6 @@ pydantic-settings
 email-validator
 python-jose[cryptography]
 bcrypt
-pyotp
-qrcode[pil]
 pytest
 httpx
 python-multipart

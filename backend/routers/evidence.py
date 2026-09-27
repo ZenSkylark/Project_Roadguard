@@ -36,7 +36,7 @@ async def upload_evidence(
     subdir = "readable" if plate else "unreadable"
     final = Path(settings.STORAGE_ROOT) / subdir / tmp.name
     final.parent.mkdir(parents=True, exist_ok=True)
-    tmp.rename(final)
+    tmp.replace(final)
 
     v = Violation(event_id=event_id, violation_type=violation_type,
                   confidence=confidence, captured_at=captured_at,

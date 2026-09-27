@@ -15,6 +15,7 @@ class RegisterIn(BaseModel):
     email: EmailStr
     password: str
     position: str = "viewer"
+    phone_number: str | None = None
 
     @field_validator("username")
     @classmethod
@@ -22,6 +23,11 @@ class RegisterIn(BaseModel):
         if not re.fullmatch(r"[a-z0-9_]{3,20}", v):
             raise ValueError("3-20 chars: lowercase, digits, underscore")
         return v
+
+    @field_validator("phone_number")
+    @classmethod
+    def _phone(cls, v):
+        return _normalize_phone(v) if v else v
 
     _pw = field_validator("password")(_check_pw)
 
@@ -88,3 +94,13 @@ class ProfileUpdateIn(BaseModel):
         if not re.fullmatch(r"[a-z0-9_]{3,20}", v):
             raise ValueError("3-20 chars: lowercase, digits, underscore")
         return v
+
+def _normalize_phone(v: str) -> str:
+    v = re.sub(r"[\s-]", "", v)
+    if not re.fullmatch(r"(\+63|0)9\d{9}", v):
+        raise ValueError("PH format: 09XXXXXXXXX or +639XXXXXXXXX")
+    return v
+
+class PhoneIn(BaseModel):
+    phone_number: str
+    _ph = field_validator("phone_number")(_normalize_phone)

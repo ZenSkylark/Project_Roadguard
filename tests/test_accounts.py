@@ -1,5 +1,4 @@
 import re
-import pyotp
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -159,27 +158,39 @@ class TestPasswords:
 
 # ---------- Multi-Factor Authentication ----------
 class TestMFA:
-    def test_full_mfa_flow(self, client):
+    def test_full_sms_mfa_flow(self, client, monkeypatch):
+        sent = {}
+        monkeypatch.setattr(auth_router, "send_sms",
+                            lambda phone, body: sent.update(body=body))
         register(client)
         t = token_of(client, "juan_officer", "Roadguard1")
-        setup = client.post("/api/auth/mfa/setup", headers=hdr(t)).json()
-        qr = client.get("/api/auth/mfa/qr", headers=hdr(t))
-        assert qr.status_code == 200 and qr.headers["content-type"] == "image/png"
-        assert client.post("/api/auth/mfa/enable",
-                           json={"code": pyotp.TOTP(setup["secret"]).now()},
+        r = client.post("/api/auth/mfa/setup",
+                        json={"phone_number": "09171234567"}, headers=hdr(t))
+        assert r.status_code == 200
+        code = re.search(r"\d{6}", sent["body"]).group()
+        assert client.post("/api/auth/mfa/enable", json={"code": code},
                            headers=hdr(t)).status_code == 200
         r = login(client, "juan_officer", "Roadguard1").json()
         assert r["mfa_required"] is True
+        code2 = re.search(r"\d{6}", sent["body"]).group()   # login re-sends OTP
         v = client.post("/api/auth/mfa/verify",
-                        json={"mfa_token": r["mfa_token"],
-                              "code": pyotp.TOTP(setup["secret"]).now()})
+                        json={"mfa_token": r["mfa_token"], "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
         assert client.get("/api/accounts/me",
                           headers=hdr(v.json()["access_token"])).status_code == 200
 
-    def test_mfa_wrong_code_rejected(self, client):
+    def test_mfa_wrong_code_rejected(self, client, monkeypatch):
+        monkeypatch.setattr(auth_router, "send_sms", lambda phone, body: None)
         register(client)
         t = token_of(client, "juan_officer", "Roadguard1")
-        client.post("/api/auth/mfa/setup", headers=hdr(t))
+        client.post("/api/auth/mfa/setup",
+                    json={"phone_number": "09171234567"}, headers=hdr(t))
         r = client.post("/api/auth/mfa/enable", json={"code": "000000"}, headers=hdr(t))
         assert r.status_code == 400
+
+    def test_bad_phone_format_rejected(self, client):
+        register(client)
+        t = token_of(client, "juan_officer", "Roadguard1")
+        r = client.post("/api/auth/mfa/setup",
+                        json={"phone_number": "12345"}, headers=hdr(t))
+        assert r.status_code == 422

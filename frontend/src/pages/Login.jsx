@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api, setToken } from "../api/client.js";
 
-export default function Login({ onLogin }) {
+export default function Login({ onLogin, onRegister }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [mfaToken, setMfaToken] = useState(null);
@@ -62,6 +62,10 @@ export default function Login({ onLogin }) {
         <button disabled={busy}
           className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-2.5 rounded-lg">
           {busy ? "Signing in..." : mfaToken ? "Verify" : "Sign In"}
+        </button>
+        <button type="button" onClick={onRegister}
+          className="w-full mt-3 text-slate-500 text-sm hover:underline">
+          Need an account? Request access
         </button>
       </form>
     </div>

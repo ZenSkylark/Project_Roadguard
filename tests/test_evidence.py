@@ -21,7 +21,8 @@ TestSession = sessionmaker(bind=engine, autoflush=False)
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))  # tests never touch real storage/
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))   # files isolated per test
+    monkeypatch.setattr(settings, "OCR_BACKEND", "stub")           # engine isolated per test
     Base.metadata.create_all(bind=engine)
     import backend.ratelimit as rl
     rl._hits.clear()
@@ -125,3 +126,5 @@ class TestWorkflow:
         assert r.status_code == 200 and len(r.json()) == 1
         assert client.get(f"/api/violations/{vid}/report", headers=hdr(vt)).status_code == 200
         assert client.get(f"/api/violations/{vid}/image", headers=hdr(vt)).status_code == 200
+
+    
