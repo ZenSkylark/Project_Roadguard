@@ -14,7 +14,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "noreply@roadguard.local"
     STORAGE_ROOT: str = "./storage"
-    OCR_BACKEND: str = "stub"        # "stub" for dev | "paddle" for production
+    OCR_BACKEND: str = "paddle"                    # "stub" | "paddle" | "trained"
+    TRAINED_OCR_PATH: str = "./models/plate_ocr.onnx"
 
 
 settings = Settings()

@@ -11,3 +11,8 @@ pytest
 httpx
 python-multipart
 python-docx
+onnxruntime
+opencv-python
+# Heavy OCR engine — install on demand:
+# paddlepaddle
+# paddleocr
