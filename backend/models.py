@@ -1,6 +1,7 @@
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey
 from .database import Base
+from .clock import utcnow
 
 class User(Base):
     __tablename__ = "users"
@@ -33,7 +34,7 @@ class RefreshToken(Base):
     token_hash = Column(String, unique=True, index=True)
     expires_at = Column(DateTime)
     revoked = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
@@ -42,7 +43,7 @@ class AuditLog(Base):
     action = Column(String)
     detail = Column(String, nullable=True)
     ip = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
 
 class Violation(Base):
     __tablename__ = "violations"

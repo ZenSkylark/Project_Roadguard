@@ -1,6 +1,7 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta
+from .clock import utcnow
 
 import bcrypt
 from fastapi import Depends, HTTPException
@@ -31,7 +32,7 @@ otp_hash = lambda code: hashlib.sha256(code.encode()).hexdigest()
 # ---------------- JWT ----------------
 def create_token(user: User, scope: str = "access", minutes: int | None = None) -> str:
     minutes = minutes or (5 if scope == "mfa" else settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    exp = datetime.utcnow() + timedelta(minutes=minutes)
+    exp = utcnow() + timedelta(minutes=minutes)
     return jwt.encode({"sub": user.username, "scope": scope, "role": user.position,
                        "exp": exp}, settings.SECRET_KEY, settings.ALGORITHM)
 
@@ -58,7 +59,7 @@ def require_position(*allowed: str):
 def lock_if_needed(db: Session, user: User, ip: str | None):
     user.failed_logins += 1
     if user.failed_logins >= LOCK_THRESHOLD:
-        user.locked_until = datetime.utcnow() + timedelta(minutes=LOCK_MINUTES)
+        user.locked_until = utcnow() + timedelta(minutes=LOCK_MINUTES)
         audit(db, user.id, "account_locked", f"{LOCK_MINUTES} min", ip)
     db.commit()
 

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/violations", tags=["violations"])
 ANY = ("administrator", "officer", "viewer")
 
 def _get(db: Session, vid: int) -> Violation:
-    v = db.query(Violation).get(vid)
+    v = db.get(Violation, vid)
     if not v or v.status == "deleted":
         raise HTTPException(404, "Violation not found")
     return v
