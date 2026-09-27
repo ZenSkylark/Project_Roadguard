@@ -53,7 +53,8 @@ export default function Login({ onLogin, onRegister }) {
           </>
         ) : (
           <>
-            <label className="block text-sm font-semibold text-slate-600 mb-1">Authenticator Code (6 digits)</label>
+            <label className="block text-sm font-semibold text-slate-600 mb-1">SMS Code (6 digits)</label>
+            <p className="text-xs text-slate-400 mb-2">Sent to your registered phone. (Dev mode: check backend console.)</p>
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
               className="w-full border rounded-lg px-3 py-2 mb-4 font-mono text-center text-xl tracking-[0.5em]" autoFocus />
           </>

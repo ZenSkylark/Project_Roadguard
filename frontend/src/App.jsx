@@ -20,7 +20,9 @@ export default function App() {
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading Roadguard...</div>;
   }
-  if (user) return <Dashboard user={user} onLogout={() => setUser(null)} />;
+  if (user) {
+    return <Dashboard user={user} onLogout={() => setUser(null)} onUserChange={setUser} />;
+  }
   return mode === "register"
     ? <Register onDone={() => setMode("login")} />
     : <Login onLogin={async () => setUser(await api("/accounts/me"))}
