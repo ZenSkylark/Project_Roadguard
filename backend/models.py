@@ -19,6 +19,19 @@ class User(Base):
     reset_expires = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
+    email_verified = Column(Boolean, default=False)
+    verify_token = Column(String, nullable=True)
+    verify_expires = Column(DateTime, nullable=True)
+    token_version = Column(Integer, default=0)     # A2: bump = kill all sessions
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    token_hash = Column(String, unique=True, index=True)
+    expires_at = Column(DateTime)
+    revoked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"

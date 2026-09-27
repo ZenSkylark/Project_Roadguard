@@ -14,7 +14,7 @@ export default function Dashboard({ user, onLogout }) {
   const [toast, setToast] = useState("");
   const loadRef = useRef(() => {});
 
-  // Manual refresh (buttons, modals, WebSocket) — event-driven, so setState is fine here
+  // Manual refresh (buttons, modals, WebSocket) — event-driven, setState is fine here
   async function load() {
     try {
       setViolations(await fetchViolations(filter));
@@ -28,7 +28,7 @@ export default function Dashboard({ user, onLogout }) {
     loadRef.current = load;
   });
 
-  // Initial fetch + refetch on filter change: setState happens ONLY after the promise resolves
+  // Initial fetch + refetch on filter change: setState only after the promise resolves
   useEffect(() => {
     let alive = true;
     fetchViolations(filter)

@@ -10,6 +10,7 @@ from .routers import auth as auth_router
 from .routers import evidence as evidence_router
 from .routers import violations as violations_router
 from .ws import manager
+from .routers import audit as audit_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -26,6 +27,7 @@ app.include_router(auth_router.router)
 app.include_router(accounts_router.router)
 app.include_router(evidence_router.router)
 app.include_router(violations_router.router)
+app.include_router(audit_router.router)
 
 @app.get("/", tags=["health"])
 def root():

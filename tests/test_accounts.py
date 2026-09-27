@@ -7,10 +7,11 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.database import Base, get_db
-from backend.main import backend
+from backend.main import app
 from backend.auth import hash_pw
 from backend.models import User
 import backend.routers.auth as auth_router          # to intercept dev-mail
+from backend.config import settings
 
 # ---------- In-memory test database (real roadguard.db untouched) ----------
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
@@ -18,7 +19,8 @@ engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
 TestSession = sessionmaker(bind=engine, autoflush=False)
 
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    monkeypatch.setattr(settings, "RATE_LIMIT_PER_MINUTE", 10000)
     Base.metadata.create_all(bind=engine)
     db = TestSession()
     db.add(User(uid="RG-2026-0000", username="admin", email="admin@roadguard.ph",
@@ -30,9 +32,9 @@ def client():
         try: yield db
         finally: db.close()
 
-    backend.dependency_overrides[get_db] = override
-    yield TestClient(backend)                       # no context => lifespan skipped
-    backend.dependency_overrides.clear()
+    app.dependency_overrides[get_db] = override
+    yield TestClient(app)                       # no context => lifespan skipped
+    app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=engine)
 
 # ---------- Helpers ----------

@@ -67,3 +67,24 @@ class PlateIn(BaseModel):
         if not re.fullmatch(r"[A-Z]{3}\d{3,4}", v):
             raise ValueError("Plate format: ABC1234 or ABC12345")
         return v
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+class VerifyEmailIn(BaseModel):
+    token: str
+
+class MfaDisableIn(BaseModel):
+    password: str
+
+class ProfileUpdateIn(BaseModel):
+    username: str | None = None
+    email: EmailStr | None = None
+
+    @field_validator("username")
+    @classmethod
+    def _u(cls, v):
+        if v is None: return v
+        if not re.fullmatch(r"[a-z0-9_]{3,20}", v):
+            raise ValueError("3-20 chars: lowercase, digits, underscore")
+        return v

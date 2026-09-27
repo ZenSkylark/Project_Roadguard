@@ -9,11 +9,11 @@ export default function App() {
   const [loading, setLoading] = useState(() => !!getToken());
 
   useEffect(() => {
-    if (!getToken()) return;               // no synchronous setState anymore
+    if (!getToken()) return;
     api("/accounts/me")
       .then(setUser)
       .catch(() => clearToken())
-      .finally(() => setLoading(false));   // setState only after the promise settles
+      .finally(() => setLoading(false));
   }, []);
 
   if (loading) {

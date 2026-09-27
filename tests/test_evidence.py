@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 
 from backend.config import settings
 from backend.database import Base, get_db
-from backend.main import backend
+from backend.main import app
 from backend.auth import hash_pw
 from backend.models import User
 
@@ -23,14 +23,16 @@ TestSession = sessionmaker(bind=engine, autoflush=False)
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))  # tests never touch real storage/
     Base.metadata.create_all(bind=engine)
+    import backend.ratelimit as rl
+    rl._hits.clear()
     db = TestSession()
     db.add_all([
         User(uid="RG-2026-0000", username="admin", email="admin@roadguard.ph",
-             hashed_password=hash_pw("Admin123!"), position="administrator"),
+             hashed_password=hash_pw("Admin123!"), position="administrator", email_verified=True),
         User(uid="RG-2026-0001", username="officer", email="officer@roadguard.ph",
-             hashed_password=hash_pw("Officer123!"), position="officer"),
+             hashed_password=hash_pw("Officer123!"), position="officer", email_verified=True),
         User(uid="RG-2026-0002", username="viewer", email="viewer@roadguard.ph",
-             hashed_password=hash_pw("Viewer123!"), position="viewer"),
+             hashed_password=hash_pw("Viewer123!"), position="viewer", email_verified=True),
     ])
     db.commit(); db.close()
 
@@ -39,13 +41,15 @@ def client(tmp_path, monkeypatch):
         try: yield db
         finally: db.close()
 
-    backend.dependency_overrides[get_db] = override
-    yield TestClient(backend)
-    backend.dependency_overrides.clear()
+    app.dependency_overrides[get_db] = override
+    yield TestClient(app)
+    app.dependency_overrides.clear()
     Base.metadata.drop_all(bind=engine)
 
 def tok(client, u, p):
-    return client.post("/api/auth/login", data={"username": u, "password": p}).json()["access_token"]
+    r = client.post("/api/auth/login", data={"username": u, "password": p})
+    assert r.status_code == 200, f"Login failed for {u}: {r.status_code} {r.json()}"
+    return r.json()["access_token"]
 
 def hdr(t): return {"Authorization": f"Bearer {t}"}
 
