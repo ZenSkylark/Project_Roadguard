@@ -2,10 +2,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from ..audit import audit
-from ..auth import hash_pw, require_position
+from ..auth import hash_pw, require_position, get_current_user
 from ..database import get_db
 from ..models import User
-from ..schemas import PositionIn, RegisterIn, StatusIn
+from ..schemas import PositionIn, RegisterIn, StatusIn, AccountUpdateIn
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -67,3 +67,20 @@ def set_status(uid: str, body: StatusIn,
     db.commit()
     audit(db, admin.id, "status_changed", f"{uid} -> {body.is_active}")
     return {"uid": uid, "is_active": user.is_active}
+
+@router.patch("/me")
+def update_me(body: AccountUpdateIn, user: User = Depends(get_current_user),
+              db: Session = Depends(get_db)):
+    if body.email:
+        if db.query(User).filter(User.email == body.email, User.id != user.id).first():
+            raise HTTPException(409, "Email already in use")
+        user.email = body.email
+    if body.phone_number:
+        if db.query(User).filter(User.phone_number == body.phone_number, User.id != user.id).first():
+            raise HTTPException(409, "Phone number already registered")
+        user.phone_number = body.phone_number
+    db.commit()
+    audit(db, user.id, "profile_updated")
+    return {"uid": user.uid, "username": user.username, "email": user.email,
+            "position": user.position, "mfa_enabled": user.mfa_enabled,
+            "phone_number": user.phone_number, "last_login": user.last_login}

@@ -104,3 +104,12 @@ def _normalize_phone(v: str) -> str:
 class PhoneIn(BaseModel):
     phone_number: str
     _ph = field_validator("phone_number")(_normalize_phone)
+
+class AccountUpdateIn(BaseModel):
+    email: str | None = None
+    phone_number: str | None = None
+
+    @field_validator("phone_number")
+    @classmethod
+    def _phone(cls, v):
+        return _normalize_phone(v) if v else v
