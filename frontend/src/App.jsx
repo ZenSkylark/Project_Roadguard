@@ -9,6 +9,7 @@ import AccountPage from "./pages/AccountPage.jsx";
 import ConfigPage from "./pages/ConfigPage.jsx";
 import { ToastProvider } from "./components/Toast.jsx";
 import { api, getToken, clearToken } from "./api/client.js";
+import AuditLogsPage from "./pages/AuditLogsPage.jsx";
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -43,6 +44,8 @@ export default function App() {
             <Route path="/account" element={<AccountPage user={user} onUserChange={setUser} />} />
             <Route path="/config"
               element={user.position === "administrator" ? <ConfigPage user={user} /> : <Navigate to="/" replace />} />
+            <Route path="/audit"
+              element={user.position === "administrator" ? <AuditLogsPage /> : <Navigate to="/" replace />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </Shell>

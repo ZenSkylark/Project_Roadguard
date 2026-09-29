@@ -6,6 +6,7 @@ const NAV = [
   { to: "/logs", label: "Violation Log", icon: "📋" },
   { to: "/account", label: "Account", icon: "👤" },
   { to: "/config", label: "Configuration", icon: "⚙️", adminOnly: true },
+  { to: "/audit", label: "Audit Trail", icon: "🕵️", adminOnly: true },
 ];
 
 export default function Shell({ user, onLogout, children }) {

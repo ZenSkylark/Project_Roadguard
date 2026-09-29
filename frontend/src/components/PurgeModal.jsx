@@ -12,7 +12,7 @@ export default function PurgeModal({ retentionDays, onClose }) {
   async function sendCode() {
     setBusy(true);
     try {
-      await api("/system/purge/challenge", { method: "POST" });
+      await api("/system/stepup/challenge", { method: "POST", body: { purpose: "purge" } });
       setStep("code");
       notify("Confirmation code sent to your phone", "info");
     } catch (e) {

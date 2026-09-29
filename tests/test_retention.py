@@ -1,5 +1,6 @@
 from datetime import timedelta
 import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,6 +21,14 @@ def client(tmp_path, monkeypatch):
     with TestClient(app) as c:
         yield c
     Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture()
+def sms(monkeypatch):
+    sent = {}
+    monkeypatch.setattr(auth_router, "send_sms", lambda p, b: sent.update(body=b))
+    monkeypatch.setattr(system_router, "send_sms", lambda p, b: sent.update(body=b))
+    return sent
 
 
 def _hdr(token):
@@ -54,53 +63,66 @@ def _enable_admin_mfa(c, t, sent):
     c.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
 
 
-def _mfa_purge(c, t, sent):
-    c.post("/api/system/purge/challenge", headers=_hdr(t))
-    pcode = re.search(r"\d{6}", sent["body"]).group()
-    return c.post("/api/system/purge", json={"code": pcode}, headers=_hdr(t))
+def _stepup_code(c, t, sent, purpose):
+    r = c.post("/api/system/stepup/challenge", json={"purpose": purpose}, headers=_hdr(t))
+    assert r.status_code == 200
+    return re.search(r"\d{6}", sent["body"]).group()
 
 
-def test_purge_requires_mfa(client, monkeypatch):
-    sent = {}
-    monkeypatch.setattr(auth_router, "send_sms", lambda p, b: sent.update(body=b))
-    monkeypatch.setattr(system_router, "send_sms", lambda p, b: sent.update(body=b))
+def test_purge_requires_mfa(client, sms):
     t = _admin_token(client)
     _upload_and_age(client, t, "evt-old", 40)
     r = client.post("/api/system/purge", json={"code": "123456"}, headers=_hdr(t))
-    assert r.status_code == 403   # no MFA -> forbidden
+    assert r.status_code == 403
 
 
-def test_purge_with_mfa_code(client, monkeypatch):
-    sent = {}
-    monkeypatch.setattr(auth_router, "send_sms", lambda p, b: sent.update(body=b))
-    monkeypatch.setattr(system_router, "send_sms", lambda p, b: sent.update(body=b))
+def test_purge_with_mfa_code(client, sms):
     t = _admin_token(client)
     vid = _upload_and_age(client, t, "evt-old", 40)
-    _enable_admin_mfa(client, t, sent)
-    r = _mfa_purge(client, t, sent)
+    _enable_admin_mfa(client, t, sms)
+    code = _stepup_code(client, t, sms, "purge")
+    r = client.post("/api/system/purge", json={"code": code}, headers=_hdr(t))
     assert r.status_code == 200 and r.json()["violations_deleted"] == 1
     lst = client.get("/api/violations", headers=_hdr(t)).json()
     assert all(v["id"] != vid for v in lst)
 
 
-def test_pending_never_purged(client, monkeypatch):
-    sent = {}
-    monkeypatch.setattr(auth_router, "send_sms", lambda p, b: sent.update(body=b))
-    monkeypatch.setattr(system_router, "send_sms", lambda p, b: sent.update(body=b))
+def test_pending_never_purged(client, sms):
     t = _admin_token(client)
     vid = _upload_and_age(client, t, "evt-pending", 40, finalize=False)
-    _enable_admin_mfa(client, t, sent)
-    _mfa_purge(client, t, sent)
+    _enable_admin_mfa(client, t, sms)
+    code = _stepup_code(client, t, sms, "purge")
+    client.post("/api/system/purge", json={"code": code}, headers=_hdr(t))
     lst = client.get("/api/violations", headers=_hdr(t)).json()
     assert any(v["id"] == vid for v in lst)
 
 
-def test_retention_config_bounds(client):
+def test_retention_save_requires_mfa(client, sms):
     t = _admin_token(client)
-    h = _hdr(t)
-    assert client.put("/api/system/retention", json={"days": 7}, headers=h).status_code == 200
-    assert client.get("/api/system/retention", headers=h).json()["retention_days"] == 7
-    r = client.put("/api/system/retention", json={"days": 0}, headers=h)
+    r = client.put("/api/system/retention", json={"days": 7, "code": "123456"}, headers=_hdr(t))
+    assert r.status_code == 403
+
+
+def test_retention_config_bounds(client, sms):
+    t = _admin_token(client)
+    _enable_admin_mfa(client, t, sms)
+
+    def put_days(days):
+        code = _stepup_code(client, t, sms, "retention")
+        return client.put("/api/system/retention", json={"days": days, "code": code}, headers=_hdr(t))
+
+    assert put_days(7).status_code == 200
+    assert client.get("/api/system/retention", headers=_hdr(t)).json()["retention_days"] == 7
+    r = put_days(0)
     assert r.status_code == 200 and r.json()["retention_days"] == 1
-    assert client.put("/api/system/retention", json={"days": -5}, headers=h).status_code == 422
-    assert client.put("/api/system/retention", json={"days": 99999}, headers=h).status_code == 422
+    assert put_days(-5).status_code == 422
+    assert put_days(99999).status_code == 422
+
+
+def test_code_is_purpose_bound(client, sms):
+    t = _admin_token(client)
+    _upload_and_age(client, t, "evt-old", 40)
+    _enable_admin_mfa(client, t, sms)
+    code = _stepup_code(client, t, sms, "retention")   # issued for retention
+    r = client.post("/api/system/purge", json={"code": code}, headers=_hdr(t))
+    assert r.status_code == 401                          # cannot be replayed on purge

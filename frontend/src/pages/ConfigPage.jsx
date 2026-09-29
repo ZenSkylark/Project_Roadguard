@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api/client.js";
 import { useToast } from "../components/toastContext.jsx";
 import PurgeModal from "../components/PurgeModal.jsx";
+import StepUpModal from "../components/StepUpModal.jsx";
 
 export default function ConfigPage({ user }) {
   const [retention, setRetention] = useState(30);
@@ -9,6 +10,7 @@ export default function ConfigPage({ user }) {
   const [ocr, setOcr] = useState(null);
   const [tpl, setTpl] = useState({ template_dir: "", default_template: null, available: [] });
   const [purgeOpen, setPurgeOpen] = useState(false);
+  const [retModal, setRetModal] = useState(false);
   const notify = useToast();
 
   useEffect(() => {
@@ -21,11 +23,21 @@ export default function ConfigPage({ user }) {
     return () => { alive = false; };
   }, []);
 
-  async function saveRetention() {
+  function startRetentionSave() {
+    if (!user.mfa_enabled) {
+      notify("Enable MFA in Account settings before changing the retention policy.", "error");
+      return;
+    }
+    setRetModal(true);
+  }
+
+  async function confirmRetention(code) {
     try {
-      const r = await api("/system/retention", { method: "PUT", body: { days: Number(retDays) || 1 } });
-      setRetention(r.retention_days); setRetDays(r.retention_days);
+      const r = await api("/system/retention", { method: "PUT", body: { days: Number(retDays) || 1, code } });
+      setRetention(r.retention_days);
+      setRetDays(r.retention_days);
       notify(`Retention window saved: ${r.retention_days} days`, "success");
+      setRetModal(false);
     } catch (e) { notify(e.message, "error"); }
   }
 
@@ -73,7 +85,7 @@ export default function ConfigPage({ user }) {
               setRetDays(raw === "" ? "" : String(Math.max(1, Math.min(3650, Number(raw)))));
             }}
             className="w-32 border rounded-lg px-3 py-2 font-mono" />
-          <button onClick={saveRetention}
+          <button onClick={startRetentionSave}
             className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">Save</button>
           <button onClick={openPurge}
             className="px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700">Purge Now</button>
@@ -113,6 +125,11 @@ export default function ConfigPage({ user }) {
       </section>
 
       {purgeOpen && <PurgeModal retentionDays={retention} onClose={() => setPurgeOpen(false)} />}
+      {retModal && (
+        <StepUpModal title="Change Retention Policy"
+          description="Changing the retention window affects automatic evidence destruction. Confirm with a one-time SMS code."
+          purpose="retention" onConfirm={confirmRetention} onClose={() => setRetModal(false)} />
+      )}
     </div>
   );
 }
