@@ -1,22 +1,31 @@
 from pydantic_settings import BaseSettings
 
+
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./roadguard.db"
-    SECRET_KEY: str = "change-me-in-prod"
+    SECRET_KEY: str = "dev-secret-change-me"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15      # A2: short-lived access
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7         # A2: long-lived refresh
-    REQUIRE_EMAIL_VERIFICATION: bool = False   # A3: flip True in production
-    RATE_LIMIT_PER_MINUTE: int = 10          
-    SMS_PROVIDER: str = ""             # empty = dev mode (prints SMS to console)
-    SMTP_HOST: str = ""            # empty = dev mode (prints emails to console)
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    STORAGE_ROOT: str = "./storage"
+
+    # Mail (empty SMTP_HOST = dev mode prints emails to console)
+    SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_FROM: str = "noreply@roadguard.local"
-    STORAGE_ROOT: str = "./storage"
-    OCR_BACKEND: str = "paddle"                    # "stub" | "paddle" | "trained"
+    SMTP_PASS: str = ""
+    MAIL_FROM: str = "no-reply@roadguard.ph"
+
+    # OCR engine: stub | paddle | trained
+    OCR_BACKEND: str = "stub"
     TRAINED_OCR_PATH: str = "./models/plate_ocr.onnx"
+
+    # SMS provider (empty = dev mode prints SMS to console)
+    SMS_PROVIDER: str = ""
+
+    # Evidence retention window in days
+    RETENTION_DAYS: int = 30
+
+    model_config = {"env_file": ".env"}
 
 
 settings = Settings()

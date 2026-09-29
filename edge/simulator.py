@@ -4,7 +4,7 @@ import uuid
 import time
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 from pathlib import Path
 
@@ -14,9 +14,8 @@ LOGIN_URL = "http://localhost:8000/api/auth/login"
 VERIFY_URL = "http://localhost:8000/api/auth/mfa/verify"
 USERNAME = "admin"
 PASSWORD = "Admin123!"
-ROOT = Path(__file__).resolve().parent.parent      # Software/ no matter the CWD
+ROOT = Path(__file__).resolve().parent.parent
 SYNTH_PLATES = sorted((ROOT / "test_plates").glob("synth_*.jpg"))
-
 
 # 1. Login (SMS-MFA aware)
 print("Authenticating with server...")
@@ -25,22 +24,19 @@ if res.status_code != 200:
     print("Login failed! Is the backend running?")
     print(res.text)
     exit()
+
 payload = res.json()
 if payload.get("mfa_required"):
     code = input("SMS code required -> check backend console for [DEV SMS], enter code: ")
-    v = requests.post(VERIFY_URL,
-                      json={"mfa_token": payload["mfa_token"], "code": code})
+    v = requests.post(VERIFY_URL, json={"mfa_token": payload["mfa_token"], "code": code})
     if v.status_code != 200:
         print("MFA verification failed:", v.text)
         exit()
     payload = v.json()
+
 TOKEN = payload["access_token"]
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
-print("Authenticated.")
-print(f"Synthetic plates available: {len(SYNTH_PLATES)}")
-if not SYNTH_PLATES:
-    print("WARNING: no synth_*.jpg in test_plates/ -> 'p' will behave like 'v'")
-
+print(f"Authenticated. Synthetic plates available: {len(SYNTH_PLATES)}")
 
 # 2. Setup the "Camera"
 cap = cv2.VideoCapture(0)
@@ -54,9 +50,13 @@ else:
 buffer = deque(maxlen=60)
 
 print("\n--- EDGE SIMULATOR ACTIVE ---")
-print("Press 'p' -> violation with READABLE plate (uploads a synth plate photo)")
-print("Press 'v' -> violation with UNREADABLE plate (uploads live frame)")
-print("Press 'q' -> quit")
+print(" TODAY (0 days old):")
+print("   'p' -> Readable plate")
+print("   'v' -> Unreadable plate")
+print(" AGED (1 to 1000 days old, random):")
+print("   'o' -> Readable plate")
+print("   'u' -> Unreadable plate")
+print(" 'q' -> quit")
 print("-----------------------------\n")
 
 while True:
@@ -73,35 +73,50 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
     buffer.append(frame)
-    cv2.imshow("Roadguard Edge Simulator (p=readable v=unreadable q=quit)", frame)
+    cv2.imshow("Roadguard Edge Simulator (p/v=today | o/u=aged | q=quit)", frame)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
-    elif key in (ord('v'), ord('p')):
-        readable = (key == ord('p'))
+    elif key in (ord('p'), ord('v'), ord('o'), ord('u')):
+        is_readable = key in (ord('p'), ord('o'))
+        is_old = key in (ord('o'), ord('u'))
+
+        # Calculate spoofed timestamp
+        if is_old:
+            days_old = random.randint(1, 1000)
+            event_time = datetime.now() - timedelta(days=days_old)
+            age_str = f"{days_old} DAYS OLD"
+        else:
+            event_time = datetime.now()
+            days_old = 0
+            age_str = "TODAY (0 days)"
+
         tmp_path = None
-        if readable and SYNTH_PLATES:
+        if is_readable and SYNTH_PLATES:
             src = random.choice(SYNTH_PLATES)
             truth = src.stem.split("_")[-1]
             fh = open(src, "rb")
-            send_name = f"plate_{src.name}"       # 'plate' prefix also satisfies stub engine
-            print(f"\n[!] VIOLATION with READABLE plate (ground truth: {truth})")
+            send_name = f"plate_{src.name}"
+            print(f"\n[!] VIOLATION: {age_str} | READABLE plate (truth: {truth})")
         else:
             tmp_path = f"sim_{uuid.uuid4().hex[:8]}.jpg"
             cv2.imwrite(tmp_path, buffer[-1])
             fh = open(tmp_path, "rb")
             send_name = tmp_path
-            print("\n[!] VIOLATION with UNREADABLE plate (live frame)")
+            print(f"\n[!] VIOLATION: {age_str} | UNREADABLE plate (live frame)")
+
+        # Spoof the event_id to ensure uniqueness even when spamming keys
+        unique_event_id = f"sim-{int(time.time())}-{random.randint(100,999)}"
 
         with fh:
             files = {'file': (send_name, fh, 'image/jpeg')}
             data = {
-                'event_id': f"sim-{int(time.time())}",
+                'event_id': unique_event_id,
                 'violation_type': random.choice(
                     ["tailgating", "running_red_light", "illegal_parking"]),
                 'confidence': '0.88',
-                'captured_at': datetime.now().isoformat(),
+                'captured_at': event_time.isoformat(),  # <-- SPOOFED TIMESTAMP SENT HERE
             }
             r = requests.post(API_URL, headers=HEADERS, files=files, data=data)
 

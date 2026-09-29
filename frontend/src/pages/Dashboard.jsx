@@ -4,6 +4,7 @@ import ViolationCard from "../components/ViolationCard.jsx";
 import PlateModal from "../components/PlateModal.jsx";
 import OcrSelector from "../components/OcrSelector.jsx";
 import MfaModal from "../components/MfaModal.jsx";
+import RetentionModal from "../components/RetentionModal.jsx";
 import ReportsTable from "../components/ReportsTable.jsx";
 
 async function fetchViolations(filter) {
@@ -15,6 +16,8 @@ export default function Dashboard({ user, onLogout, onUserChange }) {
   const [filter, setFilter] = useState("");
   const [modal, setModal] = useState(null);
   const [mfaModal, setMfaModal] = useState(false);
+  const [retModal, setRetModal] = useState(false);
+  const [retention, setRetention] = useState(null);
   const [view, setView] = useState("cards");
   const [toast, setToast] = useState("");
   const loadRef = useRef(() => {});
@@ -53,6 +56,14 @@ export default function Dashboard({ user, onLogout, onUserChange }) {
     return () => ws.close();
   }, []);
 
+  useEffect(() => {
+    let alive = true;
+    api("/system/retention")
+      .then((r) => { if (alive) setRetention(r.retention_days); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   return (
     <div className="min-h-screen bg-gray-100">
       <header className="bg-slate-900 text-white px-6 py-4 flex items-center justify-between sticky top-0 z-40 shadow">
@@ -79,10 +90,17 @@ export default function Dashboard({ user, onLogout, onUserChange }) {
           </div>
           <select value={filter} onChange={(e) => setFilter(e.target.value)}
             className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1 text-sm">
-            <option value="">All statuses</option>
+            <option value="">All active</option>
             <option value="pending">Pending</option>
             <option value="finalized">Finalized</option>
+            <option value="deleted">Deleted (Archive)</option>
           </select>
+          {user.position === "administrator" && (
+            <button onClick={() => setRetModal(true)}
+              className="px-2 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">
+              🗑 {retention ?? "…"}d
+            </button>
+          )}
           <button onClick={() => { clearToken(); onLogout(); }}
             className="px-3 py-1.5 rounded-lg bg-red-600/80 hover:bg-red-600 text-sm font-semibold">
             Logout
@@ -122,6 +140,15 @@ export default function Dashboard({ user, onLogout, onUserChange }) {
           onEnabled={async () => {
             setMfaModal(false);
             onUserChange(await api("/accounts/me"));
+          }} />
+      )}
+      {retModal && (
+        <RetentionModal initialDays={retention ?? 30}
+          onClose={() => {
+            setRetModal(false);
+            api("/system/retention")
+              .then((r) => setRetention(r.retention_days))
+              .catch(() => {});
           }} />
       )}
     </div>

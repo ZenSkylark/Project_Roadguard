@@ -24,6 +24,8 @@ def list_violations(status: str | None = None, db: Session = Depends(get_db),
     q = db.query(Violation)
     if status:
         q = q.filter(Violation.status == status)
+    else:
+        q = q.filter(Violation.status != "deleted")
     return [{"id": v.id, "event_id": v.event_id, "violation_type": v.violation_type,
              "confidence": v.confidence, "captured_at": v.captured_at,
              "plate_text": v.plate_text, "plate_source": v.plate_source,
