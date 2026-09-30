@@ -53,15 +53,26 @@ class ResetPasswordIn(BaseModel):
     code: str
     new_password: str
 
+class MfaRequestCodeIn(BaseModel):
+    mfa_token: str
+    method: str
 
-def _send_mfa_otp(user: User, db: Session, purpose: str = "login"):
-    """Generate and send OTP via user's preferred MFA method."""
+class MfaResendIn(BaseModel):
+    mfa_token: str
+    method: str
+
+
+def _send_mfa_otp(user: User, db: Session, purpose: str = "login", method: str = None):
+    """Generate and send OTP via the specified or default MFA method."""
     code = new_otp()
     user.otp_hash = otp_hash(code)
     user.otp_expires = utcnow() + timedelta(minutes=5)
     db.commit()
 
-    if user.mfa_method == "email":
+    # Use provided method, or fall back to user's default
+    send_method = method or user.mfa_method
+
+    if send_method == "email":
         send_email(user.email, "Roadguard Login Code",
                    f"Your Roadguard {purpose} code: {code}\n\nValid for 5 minutes.")
     else:
@@ -90,10 +101,21 @@ def login(request: Request, db: Session = Depends(get_db),
     user.locked_until = None
 
     if user.mfa_enabled:
-        _send_mfa_otp(user, db, "login")
+        # Don't send OTP yet — let the user choose their method
         token = create_token({"sub": str(user.id), "mfa_pending": True}, expires_minutes=5)
-        audit(db, user.id, "login_mfa_required", f"method={user.mfa_method}")
-        return {"mfa_required": True, "mfa_token": token, "method": user.mfa_method}
+        
+        available_methods = []
+        if user.email:
+            available_methods.append("email")
+        if user.phone_number:
+            available_methods.append("sms")
+        
+        audit(db, user.id, "login_mfa_required", f"methods={','.join(available_methods)}")
+        return {
+            "mfa_required": True,
+            "mfa_token": token,
+            "available_methods": available_methods
+        }
 
     user.last_login = utcnow()
     db.commit()
@@ -138,8 +160,8 @@ def verify_mfa_login(body: MfaLoginVerifyIn, request: Request, db: Session = Dep
 
 
 @router.post("/mfa/resend")
-def resend_mfa(body: MfaLoginVerifyIn, db: Session = Depends(get_db)):
-    """Resend OTP for MFA login."""
+def resend_mfa(body: MfaResendIn, db: Session = Depends(get_db)):
+    """Resend OTP to the chosen method."""
     from ..auth import decode_token
     
     try:
@@ -151,7 +173,7 @@ def resend_mfa(body: MfaLoginVerifyIn, db: Session = Depends(get_db)):
     if not user or not user.mfa_enabled:
         raise HTTPException(400, "MFA not enabled")
     
-    _send_mfa_otp(user, db, "login")
+    _send_mfa_otp(user, db, purpose="login", method=body.method)
     return {"message": "Code resent"}
 
 
@@ -186,20 +208,29 @@ def setup_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Sess
 def enable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not user.otp_hash or not user.otp_expires:
         raise HTTPException(400, "No OTP issued")
-    
+
     if user.otp_expires < utcnow():
         raise HTTPException(401, "OTP expired")
-    
+
     if user.otp_hash != otp_hash(body.code):
         raise HTTPException(401, "Invalid OTP")
-    
+
     user.mfa_enabled = True
     user.otp_hash = None
     user.otp_expires = None
+
+    # ✅ Auto-verify email if Email MFA was just enabled
+    if user.mfa_method == "email":
+        user.email_verified = True
+
     db.commit()
-    
-    audit(db, user.id, "mfa_enabled", f"method={user.mfa_method}")
-    return {"message": "MFA enabled"}
+
+    detail = f"method={user.mfa_method}"
+    if user.mfa_method == "email":
+        detail += " (email verified)"
+
+    audit(db, user.id, "mfa_enabled", detail)
+    return {"message": "MFA enabled", "email_verified": user.email_verified}
 
 
 @router.post("/mfa/disable")
@@ -334,3 +365,31 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
     
     audit(db, user.id, "password_reset")
     return {"message": "Password reset successful"}
+
+@router.post("/mfa/request-code")
+def request_mfa_code(body: MfaRequestCodeIn, db: Session = Depends(get_db)):
+    """Send OTP via the user's chosen method after login."""
+    from ..auth import decode_token
+    
+    try:
+        payload = decode_token(body.mfa_token)
+    except Exception:
+        raise HTTPException(401, "Invalid MFA token")
+    
+    if not payload.get("mfa_pending"):
+        raise HTTPException(400, "Token not pending MFA")
+    
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    if not user:
+        raise HTTPException(401, "User not found")
+    
+    # Validate the chosen method is actually available
+    if body.method == "email" and not user.email:
+        raise HTTPException(400, "Email MFA is not available for this account")
+    if body.method == "sms" and not user.phone_number:
+        raise HTTPException(400, "SMS MFA is not available for this account")
+    if body.method not in ("email", "sms"):
+        raise HTTPException(400, "Invalid MFA method")
+    
+    _send_mfa_otp(user, db, purpose="login", method=body.method)
+    return {"message": f"Code sent via {body.method}"}

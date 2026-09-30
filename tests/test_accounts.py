@@ -209,37 +209,59 @@ class TestMFA:
         register(client)
         t = token_of(client)
         
+        # Enable SMS MFA
         r = client.post("/api/auth/mfa/setup",
                         json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
         assert r.status_code == 200
         code = re.search(r"\d{6}", mock_comm["sms"]).group()
-        
         assert client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t)).status_code == 200
         
+        # Login → returns available methods (NO auto-send)
         r = login(client)
-        assert r.status_code == 200 and r.json()["mfa_required"] is True
+        assert r.status_code == 200
+        data = r.json()
+        assert data["mfa_required"] is True
+        assert "sms" in data["available_methods"]
+        assert "email" in data["available_methods"]
+        mfa_token = data["mfa_token"]
         
+        # User chooses SMS → code is sent
+        req = client.post("/api/auth/mfa/request-code",
+                          json={"mfa_token": mfa_token, "method": "sms"})
+        assert req.status_code == 200
+        
+        # Verify with the sent code
         code2 = re.search(r"\d{6}", mock_comm["sms"]).group()
         v = client.post("/api/auth/mfa/verify-login",
-                        json={"mfa_token": r.json()["mfa_token"], "code": code2})
+                        json={"mfa_token": mfa_token, "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
 
     def test_email_mfa_flow(self, client, mock_comm):
         register(client)
         t = token_of(client)
         
+        # Enable Email MFA
         r = client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         assert r.status_code == 200
         code = re.search(r"\d{6}", mock_comm["email"]).group()
-        
         assert client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t)).status_code == 200
         
+        # Login → returns available methods
         r = login(client)
-        assert r.status_code == 200 and r.json()["mfa_required"] is True
+        assert r.status_code == 200
+        data = r.json()
+        assert data["mfa_required"] is True
+        assert "email" in data["available_methods"]
+        mfa_token = data["mfa_token"]
+        
+        # User chooses Email
+        req = client.post("/api/auth/mfa/request-code",
+                          json={"mfa_token": mfa_token, "method": "email"})
+        assert req.status_code == 200
         
         code2 = re.search(r"\d{6}", mock_comm["email"]).group()
         v = client.post("/api/auth/mfa/verify-login",
-                        json={"mfa_token": r.json()["mfa_token"], "code": code2})
+                        json={"mfa_token": mfa_token, "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
 
     def test_mfa_wrong_code_rejected(self, client, mock_comm):
@@ -253,7 +275,7 @@ class TestMFA:
         register(client)
         t = token_of(client)
         
-        # Enable SMS
+        # Enable SMS first
         client.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["sms"]).group()
         client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
@@ -262,11 +284,78 @@ class TestMFA:
         r = client.post("/api/auth/mfa/switch", json={"method": "email"}, headers=_hdr(t))
         assert r.status_code == 200
         code2 = re.search(r"\d{6}", mock_comm["email"]).group()
-        
-        # Verify switch
         r2 = client.post("/api/auth/mfa/enable", json={"code": code2}, headers=_hdr(t))
         assert r2.status_code == 200
         
-        # Verify login uses email now
+        # Login → both methods available (email always + phone from earlier SMS setup)
         r_login = login(client)
-        assert r_login.json()["method"] == "email"
+        assert r_login.json()["mfa_required"] is True
+        methods = r_login.json()["available_methods"]
+        assert "email" in methods
+        assert "sms" in methods
+
+    def test_mfa_choose_email_when_both_available(self, client, mock_comm):
+        """User with both email and SMS can choose email at login."""
+        register(client)
+        t = token_of(client)
+        
+        # Enable SMS (email is also available by default)
+        client.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
+        code = re.search(r"\d{6}", mock_comm["sms"]).group()
+        client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
+        
+        # Login and explicitly choose EMAIL
+        r = login(client)
+        mfa_token = r.json()["mfa_token"]
+        
+        req = client.post("/api/auth/mfa/request-code",
+                          json={"mfa_token": mfa_token, "method": "email"})
+        assert req.status_code == 200
+        
+        code2 = re.search(r"\d{6}", mock_comm["email"]).group()
+        v = client.post("/api/auth/mfa/verify-login",
+                        json={"mfa_token": mfa_token, "code": code2})
+        assert v.status_code == 200 and "access_token" in v.json()
+
+    def test_mfa_sms_unavailable_without_phone(self, client, mock_comm):
+        """SMS should not be available if user has no phone number."""
+        register(client)
+        t = token_of(client)
+        
+        # Enable Email MFA only (no phone number)
+        client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
+        client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
+        
+        # Login → only email available, SMS should be absent
+        r = login(client)
+        data = r.json()
+        assert data["mfa_required"] is True
+        assert "email" in data["available_methods"]
+        assert "sms" not in data["available_methods"]
+        
+        # Trying to request SMS should fail
+        mfa_token = data["mfa_token"]
+        req = client.post("/api/auth/mfa/request-code",
+                          json={"mfa_token": mfa_token, "method": "sms"})
+        assert req.status_code == 400
+
+    def test_enabling_email_mfa_verifies_email(self, client, mock_comm):
+        """Enabling Email MFA should automatically mark the user's email as verified."""
+        register(client)
+        t = token_of(client)
+        
+        # Before: email not verified
+        me_before = client.get("/api/accounts/me", headers=_hdr(t)).json()
+        # (email_verified may default to True from register; we test that it STAYS/IS True after MFA)
+        
+        # Enable Email MFA
+        client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
+        r = client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
+        assert r.status_code == 200
+        assert r.json()["email_verified"] is True
+        
+        # After: email is verified
+        me_after = client.get("/api/accounts/me", headers=_hdr(t)).json()
+        assert me_after["email_verified"] is True

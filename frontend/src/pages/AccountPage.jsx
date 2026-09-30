@@ -262,8 +262,25 @@ export default function AccountPage({ user, onUserChange }) {
           <Row k="Position" v={user.position} />
           <Row k="Last login" v={user.last_login ? new Date(user.last_login).toLocaleString() : "—"} />
         </dl>
+        
+        {/* Email Verification Status */}
+        <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between">
+          <div>
+            <span className="text-sm text-slate-500">Email: </span>
+            <span className="text-sm font-mono font-semibold text-slate-700">{user.email}</span>
+          </div>
+          {user.email_verified ? (
+            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold flex items-center gap-1">
+              ✓ Verified
+            </span>
+          ) : (
+            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-semibold flex items-center gap-1">
+              ⚠ Unverified
+            </span>
+          )}
+        </div>
       </div>
-
+      
       {/* Two-Factor Authentication */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
         <div className="flex items-center justify-between mb-3">

@@ -1,69 +1,71 @@
 import json
 from pathlib import Path
-from docx import Document
 from ..config import settings
 
-# Persistent settings file inside the storage root
-SETTINGS_FILE = Path(settings.STORAGE_ROOT) / "system_settings.json"
+import tempfile
+from docx import Document
+
+
+def _get_settings_file() -> Path:
+    """Compute settings path dynamically so monkeypatched STORAGE_ROOT is respected."""
+    return Path(settings.STORAGE_ROOT) / "system_settings.json"
+
 
 def load_ui_settings() -> dict:
-    """Loads persistent UI settings (template dir, default template)."""
-    if SETTINGS_FILE.exists():
+    sf = _get_settings_file()
+    if sf.exists():
         try:
-            return json.loads(SETTINGS_FILE.read_text())
+            return json.loads(sf.read_text())
         except Exception:
             pass
     return {"template_dir": "./templates", "default_template": None}
 
+
 def save_ui_settings(data: dict):
-    """Saves settings to disk so they survive server reboots."""
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+    sf = _get_settings_file()
+    sf.parent.mkdir(parents=True, exist_ok=True)
+    current = load_ui_settings()
+    current.update(data)
+    sf.write_text(json.dumps(current, indent=2))
 
-def list_templates() -> list[str]:
-    """Returns a list of .docx filenames in the configured directory."""
+
+def list_templates() -> list:
     s = load_ui_settings()
-    t_dir = Path(s.get("template_dir", "./templates"))
-    if not t_dir.exists():
+    tdir = Path(s.get("template_dir", "./templates"))
+    if not tdir.exists():
         return []
-    return sorted([f.name for f in t_dir.glob("*.docx")])
+    return sorted([f.name for f in tdir.glob("*.docx")])
 
-def fill_template(template_name: str, violation_data: dict, output_path: str):
-    """Loads a .docx template, replaces placeholders, and saves the result."""
+def fill_template(template_name: str, data: dict) -> str:
+    """Fill a .docx template with mail-merge data and return path to the filled file."""
     s = load_ui_settings()
-    t_dir = Path(s.get("template_dir", "./templates"))
-    template_path = t_dir / template_name
-    
-    if not template_path.exists():
-        raise FileNotFoundError(f"Template '{template_name}' not found in {t_dir}")
+    tdir = Path(s.get("template_dir", "./templates"))
+    tpath = tdir / template_name
 
-    doc = Document(str(template_path))
-    
-    # Map of placeholders to actual data
-    replacements = {
-        "{{plate}}": violation_data.get("plate_text") or "N/A",
-        "{{event_id}}": violation_data.get("event_id") or "N/A",
-        "{{violation}}": violation_data.get("violation_type") or "N/A",
-        "{{date}}": str(violation_data.get("captured_at", "N/A")),
-        "{{status}}": violation_data.get("status") or "N/A",
-        "{{confidence}}": str(violation_data.get("confidence", "N/A")),
-        "{{officer}}": violation_data.get("officer_id") or "System",
-    }
+    if not tpath.exists():
+        raise FileNotFoundError(f"Template not found: {tpath}")
 
-    # Replace in paragraphs
-    for para in doc.paragraphs:
-        for key, val in replacements.items():
-            if key in para.text:
-                # Note: This works best if the placeholder isn't split by formatting changes
-                para.text = para.text.replace(key, str(val))
-                
-    # Replace in tables (if the user puts placeholders in table cells)
+    doc = Document(str(tpath))
+
+    # Replace placeholders in paragraphs
+    for paragraph in doc.paragraphs:
+        for key, value in data.items():
+            placeholder = "{{" + key + "}}"
+            if placeholder in paragraph.text:
+                paragraph.text = paragraph.text.replace(placeholder, str(value or ""))
+
+    # Replace placeholders in tables
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
-                for para in cell.paragraphs:
-                    for key, val in replacements.items():
-                        if key in para.text:
-                            para.text = para.text.replace(key, str(val))
+                for paragraph in cell.paragraphs:
+                    for key, value in data.items():
+                        placeholder = "{{" + key + "}}"
+                        if placeholder in paragraph.text:
+                            paragraph.text = paragraph.text.replace(placeholder, str(value or ""))
 
-    doc.save(output_path)
+    # Save to temp file
+    out = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+    doc.save(out.name)
+    out.close()
+    return out.name

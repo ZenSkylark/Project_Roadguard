@@ -28,11 +28,18 @@ def register(body: RegisterIn, request: Request = None, db: Session = Depends(ge
     return {"uid": user.uid, "username": user.username, "position": user.position}
 
 @router.get("/me")
-def me(user: User = Depends(require_position("administrator", "officer", "viewer"))):
-    return {"uid": user.uid, "username": user.username, "email": user.email,
-            "position": user.position, "mfa_enabled": user.mfa_enabled,
-            "phone_number": user.phone_number,           # ← Edit B lives here
-            "last_login": user.last_login}
+def get_me(user: User = Depends(get_current_user)):
+    return {
+        "uid": user.uid,
+        "username": user.username,
+        "email": user.email,
+        "email_verified": user.email_verified,
+        "position": user.position,
+        "mfa_enabled": user.mfa_enabled,
+        "mfa_method": user.mfa_method,
+        "phone_number": user.phone_number,
+        "last_login": user.last_login.isoformat() if user.last_login else None,
+    }
 
 @router.get("")
 def list_accounts(admin: User = Depends(require_position("administrator")),

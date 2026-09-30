@@ -3,14 +3,18 @@ import { api, setToken } from "../api/client.js";
 import ForgotPasswordModal from "../components/ForgotPasswordModal.jsx";
 
 export default function Login({ onLogin, onRegister }) {
+  const [step, setStep] = useState("credentials"); // credentials | select_method | enter_code
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [mfaToken, setMfaToken] = useState(null);
+  const [availableMethods, setAvailableMethods] = useState([]);
+  const [selectedMethod, setSelectedMethod] = useState(null);
   const [mfaCode, setMfaCode] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showForgot, setShowForgot] = useState(false);
 
+  // Step 1: Submit credentials
   async function handleSubmit(e) {
     e.preventDefault();
     setError("");
@@ -27,6 +31,8 @@ export default function Login({ onLogin, onRegister }) {
       const data = await res.json();
       if (data.mfa_required) {
         setMfaToken(data.mfa_token);
+        setAvailableMethods(data.available_methods || []);
+        setStep("select_method");
       } else {
         setToken(data.access_token);
         await onLogin();
@@ -38,6 +44,25 @@ export default function Login({ onLogin, onRegister }) {
     }
   }
 
+  // Step 2: Choose MFA method and request code
+  async function chooseMethod(method) {
+    setError("");
+    setLoading(true);
+    try {
+      await api("/auth/mfa/request-code", {
+        method: "POST",
+        body: { mfa_token: mfaToken, method: method },
+      });
+      setSelectedMethod(method);
+      setStep("enter_code");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Step 3: Verify the code
   async function handleMfaVerify(e) {
     e.preventDefault();
     setError("");
@@ -56,13 +81,14 @@ export default function Login({ onLogin, onRegister }) {
     }
   }
 
+  // Resend code to the selected method
   async function handleResendMfa() {
     setError("");
     setLoading(true);
     try {
       await api("/auth/mfa/resend", {
         method: "POST",
-        body: { mfa_token: mfaToken, code: "000000" },
+        body: { mfa_token: mfaToken, method: selectedMethod },
       });
       setError("");
     } catch (e) {
@@ -71,6 +97,9 @@ export default function Login({ onLogin, onRegister }) {
       setLoading(false);
     }
   }
+
+  const hasEmail = availableMethods.includes("email");
+  const hasSms = availableMethods.includes("sms");
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-blue-900">
@@ -81,7 +110,8 @@ export default function Login({ onLogin, onRegister }) {
           <p className="text-sm text-gray-500">Sign in to your account</p>
         </div>
 
-        {!mfaToken ? (
+        {/* STEP 1: Credentials */}
+        {step === "credentials" && (
           <form onSubmit={handleSubmit}>
             <input type="text" placeholder="Username" value={username}
               onChange={(e) => setUsername(e.target.value)}
@@ -107,10 +137,73 @@ export default function Login({ onLogin, onRegister }) {
               </button>
             </div>
           </form>
-        ) : (
+        )}
+
+        {/* STEP 2: Choose MFA Method */}
+        {step === "select_method" && (
+          <div>
+            <p className="text-sm text-gray-600 mb-4 text-center">
+              Choose how you'd like to receive your verification code
+            </p>
+            {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
+            
+            <div className="space-y-3">
+              {/* Email Option */}
+              <button
+                onClick={() => chooseMethod("email")}
+                disabled={!hasEmail || loading}
+                className={`w-full flex items-center gap-3 p-4 rounded-lg border-2 transition ${
+                  hasEmail
+                    ? "border-blue-200 hover:border-blue-500 hover:bg-blue-50 cursor-pointer"
+                    : "border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed"
+                }`}
+              >
+                <span className="text-2xl">✉️</span>
+                <div className="text-left">
+                  <div className="font-semibold text-gray-800">Email</div>
+                  <div className="text-xs text-gray-500">
+                    {hasEmail ? "Send code to your email" : "Not set up"}
+                  </div>
+                </div>
+              </button>
+
+              {/* SMS Option */}
+              <button
+                onClick={() => chooseMethod("sms")}
+                disabled={!hasSms || loading}
+                className={`w-full flex items-center gap-3 p-4 rounded-lg border-2 transition ${
+                  hasSms
+                    ? "border-blue-200 hover:border-blue-500 hover:bg-blue-50 cursor-pointer"
+                    : "border-gray-100 bg-gray-50 opacity-50 cursor-not-allowed"
+                }`}
+              >
+                <span className="text-2xl">📱</span>
+                <div className="text-left">
+                  <div className="font-semibold text-gray-800">SMS</div>
+                  <div className="text-xs text-gray-500">
+                    {hasSms ? "Send code to your phone" : "Not set up"}
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setStep("credentials")}
+              className="w-full mt-4 text-sm text-gray-500 hover:underline"
+            >
+              ← Back to login
+            </button>
+          </div>
+        )}
+
+        {/* STEP 3: Enter Code */}
+        {step === "enter_code" && (
           <form onSubmit={handleMfaVerify}>
             <p className="text-sm text-gray-600 mb-3 text-center">
-              Enter the 6-digit code sent to your device
+              Enter the 6-digit code sent via{" "}
+              <span className="font-semibold">
+                {selectedMethod === "email" ? "✉️ Email" : "📱 SMS"}
+              </span>
             </p>
             <input type="text" placeholder="6-digit code" value={mfaCode}
               onChange={(e) => setMfaCode(e.target.value)} maxLength={6}
@@ -127,9 +220,12 @@ export default function Login({ onLogin, onRegister }) {
                 {loading ? "Verifying..." : "Verify"}
               </button>
             </div>
-            <button type="button" onClick={() => setMfaToken(null)}
-              className="w-full text-sm text-gray-500 hover:underline">
-              Back to login
+            <button
+              type="button"
+              onClick={() => { setStep("select_method"); setMfaCode(""); setError(""); }}
+              className="w-full text-sm text-gray-500 hover:underline"
+            >
+              ← Choose a different method
             </button>
           </form>
         )}
