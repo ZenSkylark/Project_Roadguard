@@ -1,126 +1,336 @@
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.security import OAuth2PasswordRequestForm
-from jose import jwt, JWTError
+from fastapi import APIRouter, Depends, HTTPException, Request, Form
+from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
+
 from ..audit import audit
-from ..auth import (create_token, get_current_user, hash_pw, verify_pw,
-                    lock_if_needed, new_reset_token, reset_hash,
-                    new_otp, otp_hash)
+from ..auth import (
+    verify_password, hash_pw, create_token, get_current_user,
+    new_otp, otp_hash, require_position, check_lockout, lock_if_needed
+)
+from ..clock import utcnow
 from ..config import settings
 from ..database import get_db
 from ..models import User
-from ..schemas import (ForgotIn, MfaEnableIn, MfaVerifyIn,
-                       PasswordIn, PhoneIn, ResetIn)
-from ..services.mailer import send_mail
+from ..services.email import send_email
 from ..services.sms import send_sms
-from ..clock import utcnow
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-@router.post("/login")
-def login(form: OAuth2PasswordRequestForm = Depends(), request: Request = None,
-          db: Session = Depends(get_db)):
-    ip = request.client.host if request else None
-    user = db.query(User).filter(User.username == form.username).first()
-    if not user or not verify_pw(form.password, user.hashed_password):
-        if user:
-            lock_if_needed(db, user, ip)
-        raise HTTPException(401, "Bad credentials")
-    if user.locked_until and user.locked_until > utcnow():
-        raise HTTPException(423, "Account locked. Try again later.")
-    if not user.is_active:
-        raise HTTPException(403, "Account disabled")
-    user.failed_logins = 0
-    user.last_login = utcnow()
-    if user.mfa_enabled:
-        code = new_otp()
-        user.otp_hash = otp_hash(code)
-        user.otp_expires = utcnow() + timedelta(minutes=5)
-        db.commit()
-        audit(db, user.id, "login_mfa_challenge", ip=ip)
-        send_sms(user.phone_number,
-                 f"Roadguard login code: {code} (valid 5 minutes)")
-        return {"mfa_required": True, "mfa_token": create_token(user, "mfa")}
-    db.commit()
-    audit(db, user.id, "login", ip=ip)
-    return {"access_token": create_token(user), "token_type": "bearer",
-            "position": user.position, "uid": user.uid}
+class RegisterIn(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    position: str = "viewer"
 
-@router.post("/mfa/verify")
-def mfa_verify(body: MfaVerifyIn, db: Session = Depends(get_db)):
-    try:
-        p = jwt.decode(body.mfa_token, settings.SECRET_KEY, [settings.ALGORITHM])
-        if p.get("scope") != "mfa":
-            raise JWTError()
-    except JWTError:
-        raise HTTPException(401, "MFA session invalid")
-    user = db.query(User).filter(User.username == p.get("sub")).first()
-    if not user or not user.otp_hash or not user.otp_expires \
-       or user.otp_expires < utcnow():
-        raise HTTPException(401, "Code expired - log in again")
-    if user.otp_hash != otp_hash(body.code):
-        raise HTTPException(401, "Invalid code")
-    user.otp_hash = user.otp_expires = None
-    db.commit()
-    audit(db, user.id, "mfa_login")
-    return {"access_token": create_token(user), "token_type": "bearer"}
 
-@router.post("/mfa/setup")
-def mfa_setup(body: PhoneIn, user: User = Depends(get_current_user),
-              db: Session = Depends(get_db)):
-    user.phone_number = body.phone_number
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str
+    code: str | None = None
+
+
+class MfaSetupIn(BaseModel):
+    method: str  # "sms" or "email"
+    phone_number: str | None = None
+
+
+class MfaVerifyIn(BaseModel):
+    code: str
+
+
+class MfaLoginVerifyIn(BaseModel):
+    mfa_token: str
+    code: str
+
+
+class ForgotPasswordIn(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordIn(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
+
+
+def _send_mfa_otp(user: User, db: Session, purpose: str = "login"):
+    """Generate and send OTP via user's preferred MFA method."""
     code = new_otp()
     user.otp_hash = otp_hash(code)
     user.otp_expires = utcnow() + timedelta(minutes=5)
     db.commit()
-    send_sms(user.phone_number, f"Roadguard verification code: {code}")
-    return {"message": "Verification code sent to your phone"}
+
+    if user.mfa_method == "email":
+        send_email(user.email, "Roadguard Login Code",
+                   f"Your Roadguard {purpose} code: {code}\n\nValid for 5 minutes.")
+    else:
+        send_sms(user.phone_number,
+                 f"Roadguard {purpose} code: {code} (valid 5 minutes)")
+
+
+@router.post("/login")
+def login(request: Request, db: Session = Depends(get_db),
+          username: str = Form(...), password: str = Form(...)):
+    user = db.query(User).filter(User.username == username).first()
+    check_lockout(user)
+
+    if not user or not verify_password(password, user.hashed_password):
+        if user:
+            user.failed_attempts += 1
+            lock_if_needed(user)
+            db.commit()
+        audit(db, user.id if user else None, "login_failed", f"ip={request.client.host}")
+        raise HTTPException(401, "Invalid credentials")
+
+    if not user.is_active:
+        raise HTTPException(403, "Account disabled")
+
+    user.failed_attempts = 0
+    user.locked_until = None
+
+    if user.mfa_enabled:
+        _send_mfa_otp(user, db, "login")
+        token = create_token({"sub": str(user.id), "mfa_pending": True}, expires_minutes=5)
+        audit(db, user.id, "login_mfa_required", f"method={user.mfa_method}")
+        return {"mfa_required": True, "mfa_token": token, "method": user.mfa_method}
+
+    user.last_login = utcnow()
+    db.commit()
+    token = create_token({"sub": str(user.id)})
+    audit(db, user.id, "login_success", f"ip={request.client.host}")
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@router.post("/mfa/verify-login")
+def verify_mfa_login(body: MfaLoginVerifyIn, request: Request, db: Session = Depends(get_db)):
+    from ..auth import decode_token
+    
+    try:
+        payload = decode_token(body.mfa_token)
+    except Exception:
+        raise HTTPException(401, "Invalid MFA token")
+    
+    if not payload.get("mfa_pending"):
+        raise HTTPException(400, "Token not pending MFA")
+    
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    if not user:
+        raise HTTPException(401, "User not found")
+    
+    if not user.otp_hash or not user.otp_expires:
+        raise HTTPException(401, "No OTP issued")
+    
+    if user.otp_expires < utcnow():
+        raise HTTPException(401, "OTP expired")
+    
+    if user.otp_hash != otp_hash(body.code.strip()):
+        raise HTTPException(401, "Invalid OTP")
+    
+    user.otp_hash = None
+    user.otp_expires = None
+    user.last_login = utcnow()
+    db.commit()
+    
+    token = create_token({"sub": str(user.id)})
+    audit(db, user.id, "login_mfa_verified", f"ip={request.client.host}")
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@router.post("/mfa/resend")
+def resend_mfa(body: MfaLoginVerifyIn, db: Session = Depends(get_db)):
+    """Resend OTP for MFA login."""
+    from ..auth import decode_token
+    
+    try:
+        payload = decode_token(body.mfa_token)
+    except Exception:
+        raise HTTPException(401, "Invalid MFA token")
+    
+    user = db.query(User).filter(User.id == int(payload["sub"])).first()
+    if not user or not user.mfa_enabled:
+        raise HTTPException(400, "MFA not enabled")
+    
+    _send_mfa_otp(user, db, "login")
+    return {"message": "Code resent"}
+
+
+@router.post("/mfa/setup")
+def setup_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if body.method == "sms":
+        if not body.phone_number:
+            raise HTTPException(400, "Phone number required for SMS MFA")
+        user.phone_number = body.phone_number
+        user.mfa_method = "sms"
+    elif body.method == "email":
+        user.mfa_method = "email"
+    else:
+        raise HTTPException(400, "Invalid MFA method")
+    
+    code = new_otp()
+    user.otp_hash = otp_hash(code)
+    user.otp_expires = utcnow() + timedelta(minutes=5)
+    db.commit()
+    
+    if body.method == "email":
+        send_email(user.email, "Roadguard MFA Setup",
+                   f"Your MFA setup code: {code}\n\nValid for 5 minutes.")
+    else:
+        send_sms(body.phone_number, f"Roadguard MFA setup code: {code} (valid 5 minutes)")
+    
+    audit(db, user.id, "mfa_setup_initiated", f"method={body.method}")
+    return {"message": "OTP sent"}
+
 
 @router.post("/mfa/enable")
-def mfa_enable(body: MfaEnableIn, user: User = Depends(get_current_user),
-               db: Session = Depends(get_db)):
-    if not user.otp_hash or not user.otp_expires \
-       or user.otp_expires < utcnow() \
-       or user.otp_hash != otp_hash(body.code):
-        raise HTTPException(400, "Wrong or expired code - MFA not enabled")
+def enable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not user.otp_hash or not user.otp_expires:
+        raise HTTPException(400, "No OTP issued")
+    
+    if user.otp_expires < utcnow():
+        raise HTTPException(401, "OTP expired")
+    
+    if user.otp_hash != otp_hash(body.code):
+        raise HTTPException(401, "Invalid OTP")
+    
     user.mfa_enabled = True
-    user.otp_hash = user.otp_expires = None
+    user.otp_hash = None
+    user.otp_expires = None
     db.commit()
-    audit(db, user.id, "mfa_enabled")
-    return {"mfa_enabled": True}
+    
+    audit(db, user.id, "mfa_enabled", f"method={user.mfa_method}")
+    return {"message": "MFA enabled"}
+
+
+@router.post("/mfa/disable")
+def disable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Disable MFA with verification."""
+    code = new_otp()
+    user.otp_hash = otp_hash(code)
+    user.otp_expires = utcnow() + timedelta(minutes=5)
+    db.commit()
+    
+    if user.mfa_method == "email":
+        send_email(user.email, "Roadguard MFA Disable",
+                   f"Your MFA disable code: {code}\n\nValid for 5 minutes.")
+    else:
+        send_sms(user.phone_number, f"Roadguard MFA disable code: {code} (valid 5 minutes)")
+    
+    return {"message": "Confirmation code sent"}
+
+
+@router.post("/mfa/confirm-disable")
+def confirm_disable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not user.otp_hash or user.otp_hash != otp_hash(body.code):
+        raise HTTPException(401, "Invalid code")
+    
+    if user.otp_expires and user.otp_expires < utcnow():
+        raise HTTPException(401, "Code expired")
+    
+    user.mfa_enabled = False
+    user.mfa_method = None
+    user.phone_number = None
+    user.otp_hash = None
+    user.otp_expires = None
+    db.commit()
+    
+    audit(db, user.id, "mfa_disabled")
+    return {"message": "MFA disabled"}
+
+
+@router.post("/mfa/switch")
+def switch_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Switch MFA method (requires verification)."""
+    if not user.mfa_enabled:
+        raise HTTPException(400, "MFA not enabled")
+    
+    if body.method == "sms":
+        if not body.phone_number:
+            raise HTTPException(400, "Phone number required for SMS MFA")
+        user.phone_number = body.phone_number
+    elif body.method != "email":
+        raise HTTPException(400, "Invalid MFA method")
+    
+    user.mfa_method = body.method
+    code = new_otp()
+    user.otp_hash = otp_hash(code)
+    user.otp_expires = utcnow() + timedelta(minutes=5)
+    db.commit()
+    
+    if body.method == "email":
+        send_email(user.email, "Roadguard MFA Method Change",
+                   f"Your new MFA method verification code: {code}\n\nValid for 5 minutes.")
+    else:
+        send_sms(body.phone_number, f"Roadguard MFA method change code: {code} (valid 5 minutes)")
+    
+    audit(db, user.id, "mfa_method_switch_initiated", f"method={body.method}")
+    return {"message": "Verification code sent"}
+
 
 @router.post("/change-password")
-def change_password(body: PasswordIn, user: User = Depends(get_current_user),
-                    db: Session = Depends(get_db)):
-    if not verify_pw(body.old_password, user.hashed_password):
-        raise HTTPException(400, "Current password wrong")
+def change_password(body: ChangePasswordIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not verify_password(body.old_password, user.hashed_password):
+        raise HTTPException(401, "Invalid current password")
+    
+    # Require MFA if enabled
+    if user.mfa_enabled:
+        if not body.code:
+            # Send OTP
+            _send_mfa_otp(user, db, "password change")
+            audit(db, user.id, "password_change_challenge_sent")
+            raise HTTPException(428, "MFA code required")
+        
+        # Verify OTP
+        if not user.otp_hash or not user.otp_expires:
+            raise HTTPException(401, "No OTP issued")
+        if user.otp_expires < utcnow():
+            raise HTTPException(401, "OTP expired")
+        if user.otp_hash != otp_hash(body.code):
+            raise HTTPException(401, "Invalid OTP")
+        
+        user.otp_hash = None
+        user.otp_expires = None
+    
     user.hashed_password = hash_pw(body.new_password)
     db.commit()
     audit(db, user.id, "password_changed")
-    return {"message": "Password updated"}
+    return {"message": "Password changed"}
+
 
 @router.post("/forgot-password")
-def forgot(body: ForgotIn, db: Session = Depends(get_db)):
+def forgot_password(body: ForgotPasswordIn, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == body.email).first()
+    
+    # Always return success to prevent email enumeration
     if user:
-        token = new_reset_token()
-        user.reset_token = reset_hash(token)
-        user.reset_expires = utcnow() + timedelta(minutes=30)
+        code = new_otp()
+        user.reset_hash = otp_hash(code)
+        user.reset_expires = utcnow() + timedelta(minutes=15)
         db.commit()
-        send_mail(user.email, "Roadguard password reset",
-                  f"Use this token within 30 minutes:\n{token}")
-    return {"message": "If that email exists, a reset token was sent."}
+        
+        send_email(user.email, "Roadguard Password Reset",
+                   f"Your password reset code: {code}\n\nValid for 15 minutes.")
+    
+    return {"message": "If the email exists, a reset code has been sent"}
+
 
 @router.post("/reset-password")
-def reset(body: ResetIn, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.reset_token == reset_hash(body.token)).first()
-    if not user or not user.reset_expires or user.reset_expires < utcnow():
-        raise HTTPException(400, "Invalid or expired token")
+def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == body.email).first()
+    
+    if not user or not user.reset_hash:
+        raise HTTPException(400, "Invalid reset request")
+    
+    if user.reset_expires < utcnow():
+        raise HTTPException(401, "Reset code expired")
+    
+    if user.reset_hash != otp_hash(body.code):
+        raise HTTPException(401, "Invalid reset code")
+    
     user.hashed_password = hash_pw(body.new_password)
-    user.reset_token = user.reset_expires = None
-    user.failed_logins = 0
-    user.locked_until = None
+    user.reset_hash = None
+    user.reset_expires = None
     db.commit()
+    
     audit(db, user.id, "password_reset")
-    return {"message": "Password reset. You can log in now."}
+    return {"message": "Password reset successful"}

@@ -14,6 +14,7 @@ from backend.routers import system as system_router
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(settings, "OCR_BACKEND", "stub")
+    monkeypatch.setattr(settings, "SECRET_KEY", "super-secret-key-for-jwt-needs-32-chars-minimum")  # ADD THIS
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as c:
         yield c
@@ -35,7 +36,7 @@ def _hdr(t):
 def _admin_with_mfa(c, sent):
     t = c.post("/api/auth/login",
                data={"username": "admin", "password": "Admin123!"}).json()["access_token"]
-    c.post("/api/auth/mfa/setup", json={"phone_number": "09171234567"}, headers=_hdr(t))
+    c.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
     code = re.search(r"\d{6}", sent["body"]).group()
     c.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
     return t

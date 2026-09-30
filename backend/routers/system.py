@@ -161,3 +161,45 @@ def get_audit_logs(action: str | None = None, username: str | None = None,
         "detail": a.detail,
         "ip": a.ip,
     } for a, uname in rows]
+
+# ---------- Email Mode ----------
+@router.get("/email-mode")
+def get_email_mode(user=Depends(require_position("administrator", "officer", "viewer"))):
+    from ..services.templates import load_ui_settings
+    s = load_ui_settings()
+    return {"email_mode": s.get("email_mode", "dev")}
+
+
+@router.put("/email-mode")
+def set_email_mode(body: dict, db: Session = Depends(get_db),
+                   user=Depends(require_position("administrator"))):
+    mode = body.get("email_mode", "dev")
+    if mode not in ("dev", "mailtrap", "resend"):
+        raise HTTPException(400, "email_mode must be 'dev', 'mailtrap', or 'resend'")
+    from ..services.templates import load_ui_settings, save_ui_settings
+    s = load_ui_settings()
+    s["email_mode"] = mode
+    save_ui_settings(s)
+    audit(db, user.id, "email_mode_changed", mode)
+    return {"email_mode": mode}
+
+# ---------- SMS Mode ----------
+@router.get("/sms-mode")
+def get_sms_mode(user=Depends(require_position("administrator", "officer", "viewer"))):
+    from ..services.templates import load_ui_settings
+    s = load_ui_settings()
+    return {"sms_mode": s.get("sms_mode", "dev")}
+
+
+@router.put("/sms-mode")
+def set_sms_mode(body: dict, db: Session = Depends(get_db),
+                 user=Depends(require_position("administrator"))):
+    mode = body.get("sms_mode", "dev")
+    if mode not in ("dev", "twilio", "semaphore"):
+        raise HTTPException(400, "sms_mode must be 'dev', 'twilio', or 'semaphore'")
+    from ..services.templates import load_ui_settings, save_ui_settings
+    s = load_ui_settings()
+    s["sms_mode"] = mode
+    save_ui_settings(s)
+    audit(db, user.id, "sms_mode_changed", mode)
+    return {"sms_mode": mode}

@@ -5,27 +5,25 @@ from .clock import utcnow
 
 class User(Base):
     __tablename__ = "users"
-    id = Column(Integer, primary_key=True)
-    uid = Column(String, unique=True, index=True)          # ID Number
-    username = Column(String, unique=True, index=True)
-    email = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
-    position = Column(String, default="viewer")            # administrator|officer|viewer
-    is_active = Column(Boolean, default=True)
-    mfa_enabled = Column(Boolean, default=False)
-    phone_number = Column(String, unique=True, nullable=True)
+    id = Column(Integer, primary_key=True, index=True)
+    uid = Column(String, unique=True, index=True, nullable=False)
+    username = Column(String, unique=True, index=True, nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    email_verified = Column(Boolean, default=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    position = Column(String, default="viewer", nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    mfa_enabled = Column(Boolean, default=False, nullable=False)
+    mfa_method = Column(String, nullable=True)
+    phone_number = Column(String, nullable=True)
     otp_hash = Column(String, nullable=True)
     otp_expires = Column(DateTime, nullable=True)
-    failed_logins = Column(Integer, default=0)
+    failed_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
-    reset_token = Column(String, nullable=True)            # sha256 hash of token
-    reset_expires = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime, nullable=True)
-    email_verified = Column(Boolean, default=False)
-    verify_token = Column(String, nullable=True)
-    verify_expires = Column(DateTime, nullable=True)
-    token_version = Column(Integer, default=0)     # A2: bump = kill all sessions
+    reset_hash = Column(String, nullable=True)
+    reset_expires = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
 
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"

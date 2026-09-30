@@ -17,6 +17,7 @@ from backend.routers import system as system_router
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(settings, "OCR_BACKEND", "stub")
+    monkeypatch.setattr(settings, "SECRET_KEY", "super-secret-key-for-jwt-needs-32-chars-minimum")  # ADD THIS
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as c:
         yield c
@@ -58,7 +59,7 @@ def _upload_and_age(c, token, event, days_old, finalize=True):
 
 
 def _enable_admin_mfa(c, t, sent):
-    c.post("/api/auth/mfa/setup", json={"phone_number": "09171234567"}, headers=_hdr(t))
+    c.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
     code = re.search(r"\d{6}", sent["body"]).group()
     c.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
 

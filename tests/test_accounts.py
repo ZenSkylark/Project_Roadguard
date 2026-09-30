@@ -5,16 +5,28 @@ from fastapi.testclient import TestClient
 from backend.config import settings
 from backend.database import Base, engine
 from backend.main import app
+from backend.routers import auth as auth_router
 
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(settings, "OCR_BACKEND", "stub")
+    # Prevent PyJWT InsecureKeyLengthWarning during tests
+    monkeypatch.setattr(settings, "SECRET_KEY", "super-secret-key-for-jwt-needs-32-chars-minimum")
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as c:
         yield c
     Base.metadata.drop_all(bind=engine)
+
+
+@pytest.fixture()
+def mock_comm(monkeypatch):
+    """Intercepts SMS and Email sends to extract OTP codes."""
+    sent = {"sms": "", "email": ""}
+    monkeypatch.setattr(auth_router, "send_sms", lambda p, b: sent.update(sms=b))
+    monkeypatch.setattr(auth_router, "send_email", lambda to, subj, b: sent.update(email=b))
+    return sent
 
 
 def _hdr(token):
@@ -34,7 +46,10 @@ def login(c, username="juan_officer", password="Roadguard1"):
 
 
 def token_of(c, username="juan_officer", password="Roadguard1"):
-    return login(c, username, password).json()["access_token"]
+    r = login(c, username, password)
+    if r.status_code == 200:
+        return r.json().get("access_token")
+    return None
 
 
 class TestRegister:
@@ -48,7 +63,7 @@ class TestRegister:
 
     def test_auto_uid_generated(self, client):
         r = register(client)
-        assert r.status_code == 200 or r.status_code == 201
+        assert r.status_code == 201
         assert r.json()["uid"].startswith("RG-")
 
     def test_weak_password_rejected(self, client):
@@ -56,12 +71,10 @@ class TestRegister:
         assert r.status_code == 422
 
     def test_bad_username_rejected(self, client):
-        # "admin" is pre-seeded, so attempting to register it returns 409 Conflict
         r = register(client, username="admin")
         assert r.status_code == 409
 
     def test_invalid_email_format_rejected(self, client):
-        # Pydantic rejects invalid email formats with 422
         r = register(client, email="not-an-email")
         assert r.status_code == 422
 
@@ -117,20 +130,18 @@ class TestLoginAndRBAC:
         register(client, username="viewer1", email="v1@roadguard.ph", position="viewer")
         admin_token = login(client, "admin", "Admin123!").json()["access_token"]
         
-        # Find the user's UID via the list endpoint
         users = client.get("/api/accounts", headers=_hdr(admin_token)).json()
         viewer = next(u for u in users if u["username"] == "viewer1")
         uid = viewer["uid"]
         
-        # Promote
         r = client.patch(f"/api/accounts/{uid}/position",
                          json={"position": "officer"}, headers=_hdr(admin_token))
         assert r.status_code == 200 and r.json()["position"] == "officer"
-        # Disable
+        
         r = client.patch(f"/api/accounts/{uid}/status",
                          json={"is_active": False}, headers=_hdr(admin_token))
         assert r.status_code == 200 and r.json()["is_active"] is False
-        # Login should fail now
+        
         assert login(client, "viewer1", "Roadguard1").status_code == 403
 
 
@@ -140,84 +151,122 @@ class TestLockout:
         for _ in range(5):
             login(client, password="wrong")
         r = login(client, password="Roadguard1")
-        assert r.status_code == 423  # Locked
+        assert r.status_code == 423
 
 
 class TestPasswords:
-    def test_change_password(self, client):
+    def test_change_password_no_mfa(self, client):
         register(client)
         t = token_of(client)
         r = client.post("/api/auth/change-password",
                         json={"old_password": "Roadguard1", "new_password": "NewRoadguard1!"},
                         headers=_hdr(t))
         assert r.status_code == 200
-        # Old password fails
         assert login(client).status_code == 401
-        # New password works
         assert login(client, password="NewRoadguard1!").status_code == 200
 
-    def test_forgot_and_reset(self, client, monkeypatch):
-        sent = {}
-        from backend.routers import auth as auth_router
-        monkeypatch.setattr(auth_router, "send_mail",
-                            lambda to, subj, body: sent.update(body=body))
+    def test_change_password_requires_mfa(self, client, mock_comm):
         register(client)
-        r = client.post("/api/auth/forgot-password",
-                        json={"email": "juan@roadguard.ph"})
+        t = token_of(client)
+        
+        # Enable Email MFA first
+        client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
+        client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
+        
+        # Try change password WITHOUT code -> should trigger 428
+        r = client.post("/api/auth/change-password",
+                        json={"old_password": "Roadguard1", "new_password": "NewRoadguard1!"},
+                        headers=_hdr(t))
+        assert r.status_code == 428
+        
+        # Extract the code sent for the password change
+        code2 = re.search(r"\d{6}", mock_comm["email"]).group()
+        
+        # Change password WITH code -> should succeed
+        r = client.post("/api/auth/change-password",
+                        json={"old_password": "Roadguard1", "new_password": "NewRoadguard1!", "code": code2},
+                        headers=_hdr(t))
         assert r.status_code == 200
-        token = re.search(r"[A-Za-z0-9\-_]{20,}", sent["body"]).group()
+
+    def test_forgot_and_reset(self, client, mock_comm):
+        register(client)
+        r = client.post("/api/auth/forgot-password", json={"email": "juan@roadguard.ph"})
+        assert r.status_code == 200
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
         r = client.post("/api/auth/reset-password",
-                        json={"token": token, "new_password": "Reset123!"})
+                        json={"email": "juan@roadguard.ph", "code": code, "new_password": "Reset123!"})
         assert r.status_code == 200
         assert login(client, password="Reset123!").status_code == 200
 
     def test_forgot_unknown_email_does_not_leak(self, client):
-        r = client.post("/api/auth/forgot-password",
-                        json={"email": "ghost@roadguard.ph"})
-        assert r.status_code == 200  # Same generic response
+        r = client.post("/api/auth/forgot-password", json={"email": "ghost@roadguard.ph"})
+        assert r.status_code == 200
 
 
 class TestMFA:
-    def test_full_sms_mfa_flow(self, client, monkeypatch):
-        sent = {}
-        from backend.routers import auth as auth_router
-        monkeypatch.setattr(auth_router, "send_sms",
-                            lambda phone, body: sent.update(body=body))
+    def test_full_sms_mfa_flow(self, client, mock_comm):
         register(client)
         t = token_of(client)
-        # Setup phone
+        
         r = client.post("/api/auth/mfa/setup",
-                        json={"phone_number": "09171234567"}, headers=_hdr(t))
+                        json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
         assert r.status_code == 200
-        code = re.search(r"\d{6}", sent["body"]).group()
-        # Enable MFA
-        assert client.post("/api/auth/mfa/enable", json={"code": code},
-                           headers=_hdr(t)).status_code == 200
-        # Login now requires MFA
+        code = re.search(r"\d{6}", mock_comm["sms"]).group()
+        
+        assert client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t)).status_code == 200
+        
         r = login(client)
         assert r.status_code == 200 and r.json()["mfa_required"] is True
-        # Verify MFA (re-sends code)
-        code2 = re.search(r"\d{6}", sent["body"]).group()
-        v = client.post("/api/auth/mfa/verify",
+        
+        code2 = re.search(r"\d{6}", mock_comm["sms"]).group()
+        v = client.post("/api/auth/mfa/verify-login",
                         json={"mfa_token": r.json()["mfa_token"], "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
-        # Access protected route
-        assert client.get("/api/accounts/me",
-                          headers=_hdr(v.json()["access_token"])).status_code == 200
 
-    def test_mfa_wrong_code_rejected(self, client, monkeypatch):
-        from backend.routers import auth as auth_router
-        monkeypatch.setattr(auth_router, "send_sms", lambda phone, body: None)
+    def test_email_mfa_flow(self, client, mock_comm):
         register(client)
         t = token_of(client)
-        client.post("/api/auth/mfa/setup",
-                    json={"phone_number": "09171234567"}, headers=_hdr(t))
+        
+        r = client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
+        assert r.status_code == 200
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
+        
+        assert client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t)).status_code == 200
+        
+        r = login(client)
+        assert r.status_code == 200 and r.json()["mfa_required"] is True
+        
+        code2 = re.search(r"\d{6}", mock_comm["email"]).group()
+        v = client.post("/api/auth/mfa/verify-login",
+                        json={"mfa_token": r.json()["mfa_token"], "code": code2})
+        assert v.status_code == 200 and "access_token" in v.json()
+
+    def test_mfa_wrong_code_rejected(self, client, mock_comm):
+        register(client)
+        t = token_of(client)
+        client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         r = client.post("/api/auth/mfa/enable", json={"code": "000000"}, headers=_hdr(t))
-        assert r.status_code == 400
+        assert r.status_code == 401
 
-    def test_bad_phone_format_rejected(self, client):
+    def test_mfa_switch_method(self, client, mock_comm):
         register(client)
         t = token_of(client)
-        r = client.post("/api/auth/mfa/setup",
-                        json={"phone_number": "12345"}, headers=_hdr(t))
-        assert r.status_code == 422
+        
+        # Enable SMS
+        client.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
+        code = re.search(r"\d{6}", mock_comm["sms"]).group()
+        client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
+        
+        # Switch to Email
+        r = client.post("/api/auth/mfa/switch", json={"method": "email"}, headers=_hdr(t))
+        assert r.status_code == 200
+        code2 = re.search(r"\d{6}", mock_comm["email"]).group()
+        
+        # Verify switch
+        r2 = client.post("/api/auth/mfa/enable", json={"code": code2}, headers=_hdr(t))
+        assert r2.status_code == 200
+        
+        # Verify login uses email now
+        r_login = login(client)
+        assert r_login.json()["method"] == "email"

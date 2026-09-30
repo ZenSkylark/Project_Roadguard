@@ -21,8 +21,9 @@ TestSession = sessionmaker(bind=engine, autoflush=False)
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))   # files isolated per test
-    monkeypatch.setattr(settings, "OCR_BACKEND", "stub")           # engine isolated per test
+    monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(settings, "OCR_BACKEND", "stub")
+    monkeypatch.setattr(settings, "SECRET_KEY", "super-secret-key-for-jwt-needs-32-chars-minimum")  # ADD THIS
     Base.metadata.create_all(bind=engine)
     import backend.ratelimit as rl
     rl._hits.clear()
