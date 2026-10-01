@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..auth import hash_pw, get_current_user, require_position
 from ..database import get_db
 from ..models import User
+from ..audit import audit
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -132,27 +133,34 @@ def get_me(user: User = Depends(get_current_user)):
 
 
 @router.patch("/me")
-def update_me(body: UpdateMeIn, user: User = Depends(get_current_user),
-              db: Session = Depends(get_db)):
-    # Update email (resets verification if changed)
-    if body.email is not None:
-        existing = db.query(User).filter(
-            User.email == body.email, User.id != user.id).first()
-        if existing:
-            raise HTTPException(409, "Email already in use")
-        if body.email != user.email:
-            user.email = body.email
-            user.email_verified = False
-
-    # Update phone (resets verification if changed)
-    if body.phone_number is not None:
-        if body.phone_number != user.phone_number:
-            user.phone_number = body.phone_number
-            user.phone_verified = False
-
-    db.commit()
-    db.refresh(user)
-    return _user_response(user)
+def update_me(body: dict, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    changed = False
+    
+    if "email" in body and body["email"] != user.email:
+        user.email = body["email"]
+        user.email_verified = False  # Reset verification when email changes
+        changed = True
+    
+    if "phone_number" in body and body["phone_number"] != user.phone_number:
+        user.phone_number = body["phone_number"]
+        user.phone_verified = False  # Reset verification when phone changes
+        changed = True
+    
+    if changed:
+        db.commit()
+        audit(db, user.id, "profile_updated")
+    
+    return {
+        "uid": user.uid,
+        "username": user.username,
+        "email": user.email,
+        "email_verified": user.email_verified,
+        "phone_number": user.phone_number,
+        "phone_verified": user.phone_verified,
+        "position": user.position,
+        "mfa_enabled": user.mfa_enabled,
+        "mfa_method": user.mfa_method,
+    }
 
 
 # ---------- Admin: Account Management ----------

@@ -359,19 +359,17 @@ class TestEmailVerification:
     def test_send_verification_code(self, client, mock_comm):
         register(client)
         t = token_of(client)
-        r = client.post("/api/auth/email/send-verify",
-                        json={"email": "juan@roadguard.ph"}, headers=_hdr(t))
+        # No email in body — server uses authenticated user's email
+        r = client.post("/api/auth/email/send-verify", json={}, headers=_hdr(t))
         assert r.status_code == 200
         assert "verification code" in mock_comm["email"].lower()
 
     def test_confirm_verification(self, client, mock_comm):
         register(client)
         t = token_of(client)
-        client.post("/api/auth/email/send-verify",
-                    json={"email": "juan@roadguard.ph"}, headers=_hdr(t))
+        client.post("/api/auth/email/send-verify", json={}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["email"]).group()
-        r = client.post("/api/auth/email/confirm-verify",
-                        json={"email": "juan@roadguard.ph", "code": code}, headers=_hdr(t))
+        r = client.post("/api/auth/email/confirm-verify", json={"code": code}, headers=_hdr(t))
         assert r.status_code == 200
         assert r.json()["email_verified"] is True
         me = client.get("/api/accounts/me", headers=_hdr(t)).json()
@@ -383,17 +381,61 @@ class TestEmailVerification:
             "password": "Roadguard1", "position": "officer"
         })
         t = r.json().get("access_token") or token_of(client, "unverified", "Roadguard1")
-        r = client.post("/api/auth/mfa/setup",
-                        json={"method": "email"}, headers=_hdr(t))
+        r = client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         assert r.status_code == 400
-        assert "verify" in r.json()["detail"].lower()
+        assert "verified" in r.json()["detail"].lower()  # ← changed "verify" to "verified"
 
     def test_email_mfa_after_verification(self, client, mock_comm):
         register(client, mock_comm=mock_comm)
         t = token_of(client)
-        r = client.post("/api/auth/mfa/setup",
-                        json={"method": "email"}, headers=_hdr(t))
+        r = client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         assert r.status_code == 200
+
+    def test_sms_mfa_without_prior_verification(self, client, mock_comm):
+        """SMS MFA should work without prior phone verification."""
+        register(client, mock_comm=mock_comm)
+        t = token_of(client)
+        r = client.post("/api/auth/mfa/setup",
+                        json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
+        assert r.status_code == 200
+        assert "setup code" in mock_comm["sms"].lower()
+
+    def register(c, username="juan_officer", password="Roadguard1",
+        email="juan@roadguard.ph", position="officer", mock_comm=None):
+        r = c.post("/api/accounts/register", json={
+            "username": username, "email": email,
+            "password": password, "position": position
+        })
+        if r.status_code == 201 and mock_comm is not None:
+            reg_data = r.json()
+            token = reg_data.get("access_token")
+            if not token:
+                token = token_of(c, username, password)
+            if token:
+                c.post("/api/auth/email/send-verify", json={}, headers=_hdr(token))
+                match = re.search(r"\d{6}", mock_comm["email"])
+                if match:
+                    code = match.group()
+                    c.post("/api/auth/email/confirm-verify", json={"code": code}, headers=_hdr(token))
+                    mock_comm["email"] = ""
+        return r
+
+    def test_changing_email_resets_verification(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
+        t = token_of(client)
+        
+        # Verify email is currently verified
+        me = client.get("/api/accounts/me", headers=_hdr(t)).json()
+        assert me["email_verified"] is True
+        
+        # Change email
+        r = client.patch("/api/accounts/me", json={"email": "newemail@roadguard.ph"}, headers=_hdr(t))
+        assert r.status_code == 200
+        
+        # Verification should be reset
+        me = client.get("/api/accounts/me", headers=_hdr(t)).json()
+        assert me["email_verified"] is False
+        assert me["email"] == "newemail@roadguard.ph"
 
 
 class TestVerifiedEmailGate:

@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { api } from "../api/client.js";
-import MfaActivationModal from "../components/MfaActivationModal.jsx";
+import MfaModal from "../components/MfaModal.jsx";
+import VerifyEmailModal from "../components/VerifyEmailModal.jsx";
+import VerifyPhoneModal from "../components/VerifyPhoneModal.jsx";
 import { useToast } from "../components/toastContext.jsx";
 
 function Row({ k, v }) {
@@ -12,19 +14,6 @@ function Row({ k, v }) {
   );
 }
 
-function VerifiedBadge({ verified }) {
-  return verified ? (
-    <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">
-      ✓ Verified
-    </span>
-  ) : (
-    <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">
-      ⚠ Unverified
-    </span>
-  );
-}
-
-/* ---------- Disable MFA Modal ---------- */
 function DisableMfaModal({ onClose, onDone }) {
   const [step, setStep] = useState("send");
   const [code, setCode] = useState("");
@@ -58,21 +47,18 @@ function DisableMfaModal({ onClose, onDone }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-white rounded-xl p-6 w-96 shadow-2xl">
         {step === "send" ? (
           <>
             <h3 className="text-lg font-bold text-red-600 mb-2">Disable Two-Factor Authentication</h3>
             <p className="text-sm text-gray-600 mb-4">
               This removes the extra security layer from your account.
+              A confirmation code will be sent to your registered device.
             </p>
             <div className="flex gap-2">
-              <button onClick={onClose}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">
-                Cancel
-              </button>
-              <button onClick={sendCode} disabled={busy}
-                className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
+              <button onClick={onClose} className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button onClick={sendCode} disabled={busy} className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
                 {busy ? "Sending..." : "Send Code"}
               </button>
             </div>
@@ -83,12 +69,8 @@ function DisableMfaModal({ onClose, onDone }) {
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
               className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
             <div className="flex gap-2 mt-4">
-              <button onClick={onClose}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">
-                Cancel
-              </button>
-              <button onClick={confirm} disabled={busy || code.length !== 6}
-                className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
+              <button onClick={onClose} className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button onClick={confirm} disabled={busy || code.length !== 6} className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
                 {busy ? "Disabling..." : "Confirm"}
               </button>
             </div>
@@ -99,7 +81,6 @@ function DisableMfaModal({ onClose, onDone }) {
   );
 }
 
-/* ---------- Main Account Page ---------- */
 export default function AccountPage({ user, onUserChange }) {
   const [info, setInfo] = useState({ email: user.email ?? "", phone_number: user.phone_number ?? "" });
   const [pw, setPw] = useState({ old_password: "", new_password: "", confirm: "" });
@@ -107,6 +88,8 @@ export default function AccountPage({ user, onUserChange }) {
   const [mfaCode, setMfaCode] = useState("");
   const [mfaModal, setMfaModal] = useState(false);
   const [disableModal, setDisableModal] = useState(false);
+  const [verifyEmailModal, setVerifyEmailModal] = useState(false);
+  const [verifyPhoneModal, setVerifyPhoneModal] = useState(false);
   const notify = useToast();
 
   async function refreshUser() {
@@ -123,7 +106,16 @@ export default function AccountPage({ user, onUserChange }) {
       const body = {};
       if (info.email) body.email = info.email;
       if (info.phone_number) body.phone_number = info.phone_number;
-      onUserChange(await api("/accounts/me", { method: "PATCH", body }));
+      
+      // Save changes
+      await api("/accounts/me", { method: "PATCH", body });
+      
+      // Force full refresh to get updated verification status
+      await refreshUser();
+      
+      // Also update local state
+      setInfo({ email: info.email, phone_number: info.phone_number });
+      
       notify("Profile updated", "success");
     } catch (err) {
       notify(err.message, "error");
@@ -132,32 +124,26 @@ export default function AccountPage({ user, onUserChange }) {
 
   async function savePw(e) {
     e.preventDefault();
-    if (pw.new_password !== pw.confirm) {
-      notify("Passwords do not match", "error");
-      return;
-    }
+    if (pw.new_password !== pw.confirm) { notify("Passwords do not match", "error"); return; }
     try {
       await api("/auth/change-password", {
         method: "POST",
-        body: {
-          old_password: pw.old_password,
-          new_password: pw.new_password,
-          code: mfaCode || undefined,
-        },
+        body: { old_password: pw.old_password, new_password: pw.new_password, code: mfaCode || undefined },
       });
       setPw({ old_password: "", new_password: "", confirm: "" });
-      setMfaCode("");
-      setShowMfaChallenge(false);
+      setMfaCode(""); setShowMfaChallenge(false);
       notify("Password changed", "success");
     } catch (err) {
       if (err.message && /mfa code required/i.test(err.message)) {
         setShowMfaChallenge(true);
-        notify("MFA code sent — enter it to confirm", "info");
+        notify("MFA code sent to your device", "info");
       } else {
         notify(err.message, "error");
       }
     }
   }
+
+
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -173,30 +159,45 @@ export default function AccountPage({ user, onUserChange }) {
           <Row k="Last login" v={user.last_login ? new Date(user.last_login).toLocaleString() : "—"} />
         </dl>
 
-        {/* Contact Verification Status */}
+        {/* Verification Status */}
         <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+          {/* Email Verification */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-lg">✉️</span>
-              <div>
-                <div className="text-xs text-slate-400">Email</div>
-                <div className="text-sm font-mono font-semibold text-slate-700">{user.email}</div>
-              </div>
+            <div>
+              <span className="text-sm text-slate-500">📧 Email: </span>
+              <span className="text-sm font-mono font-semibold text-slate-700">{user.email}</span>
             </div>
-            <VerifiedBadge verified={user.email_verified} />
+            {user.email_verified ? (
+              <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold">✓ Verified</span>
+            ) : (
+              <button onClick={() => setVerifyEmailModal(true)}
+                className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-semibold hover:bg-amber-200 transition cursor-pointer">
+                ⚠ Unverified — Click to verify
+              </button>
+            )}
           </div>
 
+          {/* Phone Verification */}
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-lg">📱</span>
-              <div>
-                <div className="text-xs text-slate-400">Phone Number</div>
-                <div className="text-sm font-mono font-semibold text-slate-700">
-                  {user.phone_number || "Not set"}
-                </div>
-              </div>
+            <div>
+              <span className="text-sm text-slate-500">📱 Phone: </span>
+              <span className="text-sm font-mono font-semibold text-slate-700">{user.phone_number || "Not set"}</span>
             </div>
-            <VerifiedBadge verified={user.phone_verified} />
+            {user.phone_number ? (
+              user.phone_verified ? (
+                <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold">✓ Verified</span>
+              ) : (
+                <button onClick={() => setVerifyPhoneModal(true)}
+                  className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-semibold hover:bg-amber-200 transition cursor-pointer">
+                  ⚠ Unverified — Click to verify
+                </button>
+              )
+            ) : (
+              <button onClick={() => setVerifyPhoneModal(true)}
+                className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full font-semibold hover:bg-blue-200 transition cursor-pointer">
+                + Add & Verify Phone
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -206,13 +207,9 @@ export default function AccountPage({ user, onUserChange }) {
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-slate-800">🔐 Two-Factor Authentication</h2>
           {user.mfa_enabled ? (
-            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold">
-              ENABLED
-            </span>
+            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold">ENABLED</span>
           ) : (
-            <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full font-semibold">
-              DISABLED
-            </span>
+            <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full font-semibold">DISABLED</span>
           )}
         </div>
 
@@ -230,12 +227,20 @@ export default function AccountPage({ user, onUserChange }) {
           </div>
         ) : (
           <div className="space-y-3">
-            <p className="text-sm text-slate-500">
-              Add an extra layer of security to your account.
-            </p>
+            <p className="text-sm text-slate-500">Add an extra layer of security to your account.</p>
+            {!user.email_verified && !user.phone_number && (
+              <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded-lg">
+                ⚠️ Verify your email or add a phone number above to enable MFA.
+              </p>
+            )}
             <button onClick={() => setMfaModal(true)}
-              className="w-full px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600">
-              🔐 Activate MFA
+              className={`w-full px-4 py-2 rounded-lg text-sm font-semibold ${
+                user.email_verified || user.phone_number
+                  ? "bg-amber-500 text-white hover:bg-amber-600"
+                  : "bg-gray-300 text-gray-500 cursor-not-allowed"
+              }`}
+              disabled={!user.email_verified && !user.phone_number}>
+              Enable MFA
             </button>
           </div>
         )}
@@ -250,18 +255,14 @@ export default function AccountPage({ user, onUserChange }) {
         <label className="text-sm font-semibold text-slate-600 block mb-1">Phone Number</label>
         <input value={info.phone_number ?? ""} onChange={(e) => setInfo({ ...info, phone_number: e.target.value })}
           placeholder="09XXXXXXXXX" className="w-full border rounded-lg px-3 py-2 mb-3 font-mono" />
-        <button className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">
-          Save Changes
-        </button>
+        <button className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">Save Changes</button>
       </form>
 
       {/* Change Password */}
       <form onSubmit={savePw} className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
         <h2 className="font-bold text-slate-800 mb-4">Change Password</h2>
         {user.mfa_enabled && (
-          <p className="text-xs text-slate-400 mb-3">
-            🔐 This account requires MFA confirmation to change the password.
-          </p>
+          <p className="text-xs text-slate-400 mb-3">🔐 This account requires MFA confirmation to change the password.</p>
         )}
         <input type="password" placeholder="Current password" value={pw.old_password}
           onChange={(e) => setPw({ ...pw, old_password: e.target.value })}
@@ -276,8 +277,7 @@ export default function AccountPage({ user, onUserChange }) {
           <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
             <label className="block text-sm font-semibold text-blue-700 mb-1">MFA Code Required</label>
             <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} maxLength={6}
-              placeholder="6-digit code"
-              className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
+              placeholder="6-digit code" className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
           </div>
         )}
         <button className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">
@@ -286,18 +286,10 @@ export default function AccountPage({ user, onUserChange }) {
       </form>
 
       {/* Modals */}
-      {mfaModal && (
-        <MfaActivationModal
-          user={user}
-          onClose={() => setMfaModal(false)}
-          onActivated={() => { setMfaModal(false); refreshUser(); }}
-          onUserRefresh={refreshUser}
-        />
-      )}
-      {disableModal && (
-        <DisableMfaModal onClose={() => setDisableModal(false)}
-          onDone={() => { setDisableModal(false); refreshUser(); }} />
-      )}
+      {mfaModal && <MfaModal user={user} onClose={() => setMfaModal(false)} onEnabled={() => { setMfaModal(false); refreshUser(); }} />}
+      {disableModal && <DisableMfaModal onClose={() => setDisableModal(false)} onDone={() => { setDisableModal(false); refreshUser(); }} />}
+      {verifyEmailModal && <VerifyEmailModal user={user} onClose={() => setVerifyEmailModal(false)} onVerified={() => { setVerifyEmailModal(false); refreshUser(); }} />}
+      {verifyPhoneModal && <VerifyPhoneModal user={user} onClose={() => setVerifyPhoneModal(false)} onVerified={() => { setVerifyPhoneModal(false); refreshUser(); }} />}
     </div>
   );
 }

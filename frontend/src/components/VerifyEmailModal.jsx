@@ -11,9 +11,10 @@ export default function VerifyEmailModal({ user, onClose, onVerified }) {
   async function sendCode() {
     setBusy(true);
     try {
+      // No email needed in body — server uses authenticated user's email
       await api("/auth/email/send-verify", { method: "POST", body: {} });
       setStep("verify");
-      notify("Verification code sent to your email", "success");
+      notify(`Code sent to ${user.email}`, "success");
     } catch (e) {
       notify(e.message, "error");
     } finally {
@@ -35,7 +36,7 @@ export default function VerifyEmailModal({ user, onClose, onVerified }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[70]">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-white rounded-xl p-6 w-96 shadow-2xl">
         {step === "send" ? (
           <>
@@ -44,12 +45,8 @@ export default function VerifyEmailModal({ user, onClose, onVerified }) {
               We'll send a verification code to <strong>{user.email}</strong>.
             </p>
             <div className="flex gap-2">
-              <button onClick={onClose}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">
-                Cancel
-              </button>
-              <button onClick={sendCode} disabled={busy}
-                className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
+              <button onClick={onClose} className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">Cancel</button>
+              <button onClick={sendCode} disabled={busy} className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
                 {busy ? "Sending..." : "Send Code"}
               </button>
             </div>
@@ -59,15 +56,11 @@ export default function VerifyEmailModal({ user, onClose, onVerified }) {
             <h3 className="text-lg font-bold text-gray-800 mb-2">📧 Enter Verification Code</h3>
             <p className="text-sm text-gray-500 mb-4">Check your email for the 6-digit code.</p>
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
-              placeholder="6-digit code"
+              placeholder="6-digit code" autoFocus
               className="w-full border rounded-lg px-3 py-2 mb-4 font-mono text-center text-xl tracking-[0.5em]" />
             <div className="flex gap-2">
-              <button onClick={() => setStep("send")}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">
-                Back
-              </button>
-              <button onClick={verify} disabled={busy || code.length !== 6}
-                className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
+              <button onClick={() => setStep("send")} className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">Back</button>
+              <button onClick={verify} disabled={busy || code.length !== 6} className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
                 {busy ? "Verifying..." : "Verify Email"}
               </button>
             </div>

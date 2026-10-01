@@ -231,16 +231,13 @@ def resend_mfa(body: MfaResendIn, db: Session = Depends(get_db)):
 
 @router.post("/mfa/setup")
 def setup_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not user.email_verified and not user.phone_verified:
-        raise HTTPException(400,
-            "You must verify your email or phone number before enabling MFA.")
-
     if body.method == "sms":
         if not body.phone_number:
             raise HTTPException(400, "Phone number required for SMS MFA")
         user.phone_number = body.phone_number
         user.mfa_method = "sms"
     elif body.method == "email":
+        # Email MFA requires email to be verified first
         if not user.email_verified:
             raise HTTPException(400, "Email must be verified before enabling Email MFA")
         user.mfa_method = "email"
@@ -425,11 +422,8 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
 # ─── Email Verification ────────────────────────────────────────────────────────
 
 @router.post("/email/send-verify")
-def send_email_verification(body: EmailVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def send_email_verification(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send verification code to user's email."""
-    if user.email != body.email:
-        raise HTTPException(400, "Email does not match your account")
-
     code = new_otp()
     user.otp_hash = otp_hash(code)
     user.otp_expires = utcnow() + timedelta(minutes=15)
@@ -443,11 +437,8 @@ def send_email_verification(body: EmailVerifyIn, user: User = Depends(get_curren
 
 
 @router.post("/email/confirm-verify")
-def confirm_email_verification(body: EmailConfirmVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def confirm_email_verification(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Confirm email verification code."""
-    if user.email != body.email:
-        raise HTTPException(400, "Email does not match your account")
-
     if not user.otp_hash or not user.otp_expires:
         raise HTTPException(400, "No verification code issued")
     if user.otp_expires < utcnow():
@@ -462,7 +453,6 @@ def confirm_email_verification(body: EmailConfirmVerifyIn, user: User = Depends(
 
     audit(db, user.id, "email_verified")
     return {"message": "Email verified successfully", "email_verified": True}
-
 
 # ─── Phone Verification ────────────────────────────────────────────────────────
 
