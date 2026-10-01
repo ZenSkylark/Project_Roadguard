@@ -3,6 +3,8 @@ import { api } from "../api/client.js";
 import { useToast } from "../components/toastContext.jsx";
 import PurgeModal from "../components/PurgeModal.jsx";
 import StepUpModal from "../components/StepUpModal.jsx";
+import VerifyEmailModal from "../components/VerifyEmailModal.jsx";
+import VerifyPhoneModal from "../components/VerifyPhoneModal.jsx";
 
 export default function ConfigPage({ user }) {
   const [retention, setRetention] = useState(30);
@@ -14,6 +16,8 @@ export default function ConfigPage({ user }) {
   const notify = useToast();
   const [emailMode, setEmailMode] = useState(null);
   const [smsMode, setSmsMode] = useState(null);
+  const [verifyEmailModal, setVerifyEmailModal] = useState(false);
+  const [verifyPhoneModal, setVerifyPhoneModal] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -91,6 +95,44 @@ export default function ConfigPage({ user }) {
   return (
     <div className="max-w-3xl space-y-6">
       <h1 className="text-2xl font-black text-slate-800">Configuration</h1>
+
+                {/* Verification Status Banner */}
+          {(!user.email_verified && !user.phone_verified) ? (
+            <section className="bg-amber-50 border-2 border-amber-300 rounded-2xl shadow-sm p-6">
+              <div className="flex items-start gap-3">
+                <span className="text-3xl">⚠️</span>
+                <div className="flex-1">
+                  <h2 className="font-bold text-amber-900 mb-1">Account Verification Required</h2>
+                  <p className="text-sm text-amber-800 mb-3">
+                    Neither your email nor phone is verified. Your account is in{" "}
+                    <strong>read-only mode</strong> regardless of your assigned position.
+                  </p>
+                  <div className="flex gap-2">
+                    <button onClick={() => setVerifyEmailModal(true)}
+                      className="px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700">
+                      ✉️ Verify Email
+                    </button>
+                    <button onClick={() => setVerifyPhoneModal(true)}
+                      className="px-4 py-2 rounded-lg bg-amber-600 text-white text-sm font-semibold hover:bg-amber-700">
+                      📱 Verify Phone
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+          ) : (
+            <section className="bg-emerald-50 border border-emerald-200 rounded-2xl shadow-sm p-4">
+              <div className="flex items-center gap-2 text-emerald-800">
+                <span className="text-xl">✓</span>
+                <span className="font-semibold text-sm">
+                  Account verified — full access enabled
+                  {user.email_verified && " · ✉️ Email"}
+                  {user.phone_verified && " · 📱 Phone"}
+                </span>
+              </div>
+            </section>
+          )}
+
 
       <section className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
         <h2 className="font-bold text-slate-800 mb-1">🗑️ Storage Retention</h2>
@@ -201,6 +243,15 @@ export default function ConfigPage({ user }) {
         <StepUpModal title="Change Retention Policy"
           description="Changing the retention window affects automatic evidence destruction. Confirm with a one-time SMS code."
           purpose="retention" onConfirm={confirmRetention} onClose={() => setRetModal(false)} />
+      )}
+
+      {verifyEmailModal && (
+        <VerifyEmailModal user={user} onClose={() => setVerifyEmailModal(false)}
+          onVerified={() => { setVerifyEmailModal(false); window.location.reload(); }} />
+      )}
+      {verifyPhoneModal && (
+        <VerifyPhoneModal user={user} onClose={() => setVerifyPhoneModal(false)}
+          onVerified={() => { setVerifyPhoneModal(false); window.location.reload(); }} />
       )}
     </div>
   );

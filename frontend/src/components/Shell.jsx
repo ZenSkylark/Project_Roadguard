@@ -65,7 +65,18 @@ export default function Shell({ user, onLogout, children }) {
         </div>
       )}
 
-      <main className="p-6">{children}</main>
+      <main className="p-6">{children}
+        {user && !user.email_verified && !user.phone_verified && (
+        <div className="bg-amber-100 border-b border-amber-300 px-4 py-2 text-sm text-amber-900 flex items-center justify-between">
+          <span>
+            ⚠️ <strong>Account not verified</strong> — You are in read-only mode.
+          </span>
+          <a href="/config" className="text-amber-700 underline font-semibold hover:text-amber-900">
+            Verify Now →
+          </a>
+        </div>
+        )}
+      </main>
     </div>
   );
 }

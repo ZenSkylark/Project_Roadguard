@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api/client.js";
-import MfaModal from "../components/MfaModal.jsx";
+import MfaActivationModal from "../components/MfaActivationModal.jsx";
 import { useToast } from "../components/toastContext.jsx";
 
 function Row({ k, v }) {
@@ -12,102 +12,15 @@ function Row({ k, v }) {
   );
 }
 
-/* ---------- Switch MFA Method Modal ---------- */
-function SwitchMfaModal({ user, onClose, onDone }) {
-  const [method, setMethod] = useState(user.mfa_method === "sms" ? "email" : "sms");
-  const [phone, setPhone] = useState(user.phone_number ?? "");
-  const [code, setCode] = useState("");
-  const [step, setStep] = useState("choose");
-  const [busy, setBusy] = useState(false);
-  const notify = useToast();
-
-  async function sendCode() {
-    setBusy(true);
-    try {
-      const body = { method };
-      if (method === "sms") body.phone_number = phone;
-      await api("/auth/mfa/switch", { method: "POST", body });
-      setStep("verify");
-      notify("Verification code sent", "info");
-    } catch (e) {
-      notify(e.message, "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function verify() {
-    setBusy(true);
-    try {
-      await api("/auth/mfa/enable", { method: "POST", body: { code } });
-      notify("MFA method switched successfully", "success");
-      onDone();
-    } catch (e) {
-      notify(e.message, "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 w-96 shadow-2xl">
-        {step === "choose" ? (
-          <>
-            <h3 className="text-lg font-bold text-gray-800 mb-2">Switch MFA Method</h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Current: {user.mfa_method === "sms" ? "📱 SMS" : "✉️ Email"}
-            </p>
-            <div className="space-y-2 mb-4">
-              <label className="flex items-center gap-2">
-                <input type="radio" value="email" checked={method === "email"}
-                  onChange={(e) => setMethod(e.target.value)} />
-                <span>✉️ Email ({user.email})</span>
-              </label>
-              <label className="flex items-center gap-2">
-                <input type="radio" value="sms" checked={method === "sms"}
-                  onChange={(e) => setMethod(e.target.value)} />
-                <span>📱 SMS</span>
-              </label>
-            </div>
-            {method === "sms" && (
-              <input type="tel" placeholder="Phone number (09XXXXXXXXX)" value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 mb-4 font-mono" />
-            )}
-            <div className="flex gap-2">
-              <button onClick={onClose}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">
-                Cancel
-              </button>
-              <button onClick={sendCode} disabled={busy || (method === "sms" && !phone)}
-                className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
-                {busy ? "Sending..." : "Send Code"}
-              </button>
-            </div>
-          </>
-        ) : (
-          <>
-            <h3 className="text-lg font-bold text-gray-800 mb-2">📱 Verify New Method</h3>
-            <p className="text-sm text-gray-500 mb-4">
-              Enter the 6-digit code sent to your {method === "email" ? "email" : "phone"}.
-            </p>
-            <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
-              className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
-            <div className="flex gap-2 mt-4">
-              <button onClick={onClose}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">
-                Cancel
-              </button>
-              <button onClick={verify} disabled={busy || code.length !== 6}
-                className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
-                {busy ? "Verifying..." : "Confirm Switch"}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
+function VerifiedBadge({ verified }) {
+  return verified ? (
+    <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-semibold">
+      ✓ Verified
+    </span>
+  ) : (
+    <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-semibold">
+      ⚠ Unverified
+    </span>
   );
 }
 
@@ -145,14 +58,13 @@ function DisableMfaModal({ onClose, onDone }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[60]">
       <div className="bg-white rounded-xl p-6 w-96 shadow-2xl">
         {step === "send" ? (
           <>
             <h3 className="text-lg font-bold text-red-600 mb-2">Disable Two-Factor Authentication</h3>
             <p className="text-sm text-gray-600 mb-4">
               This removes the extra security layer from your account.
-              A confirmation code will be sent to your registered device.
             </p>
             <div className="flex gap-2">
               <button onClick={onClose}
@@ -161,14 +73,13 @@ function DisableMfaModal({ onClose, onDone }) {
               </button>
               <button onClick={sendCode} disabled={busy}
                 className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
-                {busy ? "Sending..." : "Send Confirmation Code"}
+                {busy ? "Sending..." : "Send Code"}
               </button>
             </div>
           </>
         ) : (
           <>
             <h3 className="text-lg font-bold text-gray-800 mb-2">📱 Enter Confirmation Code</h3>
-            <p className="text-sm text-gray-500 mb-4">Enter the code to confirm disabling MFA.</p>
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
               className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
             <div className="flex gap-2 mt-4">
@@ -178,7 +89,7 @@ function DisableMfaModal({ onClose, onDone }) {
               </button>
               <button onClick={confirm} disabled={busy || code.length !== 6}
                 className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
-                {busy ? "Disabling..." : "Confirm Disable"}
+                {busy ? "Disabling..." : "Confirm"}
               </button>
             </div>
           </>
@@ -195,7 +106,6 @@ export default function AccountPage({ user, onUserChange }) {
   const [showMfaChallenge, setShowMfaChallenge] = useState(false);
   const [mfaCode, setMfaCode] = useState("");
   const [mfaModal, setMfaModal] = useState(false);
-  const [switchModal, setSwitchModal] = useState(false);
   const [disableModal, setDisableModal] = useState(false);
   const notify = useToast();
 
@@ -242,7 +152,7 @@ export default function AccountPage({ user, onUserChange }) {
     } catch (err) {
       if (err.message && /mfa code required/i.test(err.message)) {
         setShowMfaChallenge(true);
-        notify("MFA code sent to your device — enter it to confirm", "info");
+        notify("MFA code sent — enter it to confirm", "info");
       } else {
         notify(err.message, "error");
       }
@@ -262,32 +172,42 @@ export default function AccountPage({ user, onUserChange }) {
           <Row k="Position" v={user.position} />
           <Row k="Last login" v={user.last_login ? new Date(user.last_login).toLocaleString() : "—"} />
         </dl>
-        
-        {/* Email Verification Status */}
-        <div className="mt-4 pt-4 border-t border-gray-100 flex items-center justify-between">
-          <div>
-            <span className="text-sm text-slate-500">Email: </span>
-            <span className="text-sm font-mono font-semibold text-slate-700">{user.email}</span>
+
+        {/* Contact Verification Status */}
+        <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">✉️</span>
+              <div>
+                <div className="text-xs text-slate-400">Email</div>
+                <div className="text-sm font-mono font-semibold text-slate-700">{user.email}</div>
+              </div>
+            </div>
+            <VerifiedBadge verified={user.email_verified} />
           </div>
-          {user.email_verified ? (
-            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold flex items-center gap-1">
-              ✓ Verified
-            </span>
-          ) : (
-            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-semibold flex items-center gap-1">
-              ⚠ Unverified
-            </span>
-          )}
+
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-lg">📱</span>
+              <div>
+                <div className="text-xs text-slate-400">Phone Number</div>
+                <div className="text-sm font-mono font-semibold text-slate-700">
+                  {user.phone_number || "Not set"}
+                </div>
+              </div>
+            </div>
+            <VerifiedBadge verified={user.phone_verified} />
+          </div>
         </div>
       </div>
-      
+
       {/* Two-Factor Authentication */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-slate-800">🔐 Two-Factor Authentication</h2>
           {user.mfa_enabled ? (
             <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded-full font-semibold">
-              ENABLED · {user.mfa_method === "email" ? "✉️ EMAIL" : "📱 SMS"}
+              ENABLED
             </span>
           ) : (
             <span className="text-xs bg-gray-100 text-gray-500 px-2 py-1 rounded-full font-semibold">
@@ -295,30 +215,27 @@ export default function AccountPage({ user, onUserChange }) {
             </span>
           )}
         </div>
+
         {user.mfa_enabled ? (
           <div className="space-y-3">
             <p className="text-sm text-slate-500">
               {user.mfa_method === "email"
-                ? `Codes are sent to ${user.email}`
-                : `Codes are sent to ${user.phone_number || "your phone"}`}
+                ? `✉️ Email MFA active — codes sent to ${user.email}`
+                : `📱 SMS MFA active — codes sent to ${user.phone_number || "your phone"}`}
             </p>
-            <div className="flex gap-2">
-              <button onClick={() => setSwitchModal(true)}
-                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700">
-                Switch Method
-              </button>
-              <button onClick={() => setDisableModal(true)}
-                className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-sm font-semibold hover:bg-red-50">
-                Disable MFA
-              </button>
-            </div>
+            <button onClick={() => setDisableModal(true)}
+              className="px-4 py-2 rounded-lg border border-red-300 text-red-600 text-sm font-semibold hover:bg-red-50">
+              Disable MFA
+            </button>
           </div>
         ) : (
-          <div>
-            <p className="text-sm text-slate-500 mb-3">Add an extra layer of security to your account.</p>
+          <div className="space-y-3">
+            <p className="text-sm text-slate-500">
+              Add an extra layer of security to your account.
+            </p>
             <button onClick={() => setMfaModal(true)}
-              className="px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600">
-              Enable MFA
+              className="w-full px-4 py-2 rounded-lg bg-amber-500 text-white text-sm font-semibold hover:bg-amber-600">
+              🔐 Activate MFA
             </button>
           </div>
         )}
@@ -330,7 +247,7 @@ export default function AccountPage({ user, onUserChange }) {
         <label className="text-sm font-semibold text-slate-600 block mb-1">Email</label>
         <input value={info.email} onChange={(e) => setInfo({ ...info, email: e.target.value })}
           className="w-full border rounded-lg px-3 py-2 mb-3" />
-        <label className="text-sm font-semibold text-slate-600 block mb-1">Phone (for SMS MFA)</label>
+        <label className="text-sm font-semibold text-slate-600 block mb-1">Phone Number</label>
         <input value={info.phone_number ?? ""} onChange={(e) => setInfo({ ...info, phone_number: e.target.value })}
           placeholder="09XXXXXXXXX" className="w-full border rounded-lg px-3 py-2 mb-3 font-mono" />
         <button className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">
@@ -361,9 +278,6 @@ export default function AccountPage({ user, onUserChange }) {
             <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} maxLength={6}
               placeholder="6-digit code"
               className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
-            <p className="text-xs text-blue-500 mt-1">
-              A code was sent to your registered device. Submit again to confirm.
-            </p>
           </div>
         )}
         <button className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">
@@ -373,12 +287,12 @@ export default function AccountPage({ user, onUserChange }) {
 
       {/* Modals */}
       {mfaModal && (
-        <MfaModal user={user} onClose={() => setMfaModal(false)}
-          onEnabled={() => { setMfaModal(false); refreshUser(); }} />
-      )}
-      {switchModal && (
-        <SwitchMfaModal user={user} onClose={() => setSwitchModal(false)}
-          onDone={() => { setSwitchModal(false); refreshUser(); }} />
+        <MfaActivationModal
+          user={user}
+          onClose={() => setMfaModal(false)}
+          onActivated={() => { setMfaModal(false); refreshUser(); }}
+          onUserRefresh={refreshUser}
+        />
       )}
       {disableModal && (
         <DisableMfaModal onClose={() => setDisableModal(false)}

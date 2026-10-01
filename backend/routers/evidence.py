@@ -38,9 +38,13 @@ async def upload_evidence(
     final.parent.mkdir(parents=True, exist_ok=True)
     tmp.replace(final)
 
-    v = Violation(event_id=event_id, violation_type=violation_type,
-                  confidence=confidence, captured_at=captured_at,
-                  image_path=str(final), uploaded_by=user.id,
+    v = Violation(event_id=event_id, 
+                  uid=user.uid,
+                  violation_type=violation_type,
+                  confidence=confidence, 
+                  captured_at=captured_at,
+                  image_path=str(final), 
+                  uploaded_by=user.username,
                   plate_text=plate.text if plate else None,
                   plate_confidence=plate.confidence if plate else None,
                   plate_source="ocr" if plate else None, status="pending")

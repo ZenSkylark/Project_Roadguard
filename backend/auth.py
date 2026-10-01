@@ -74,12 +74,18 @@ def get_current_user(
 
 
 def require_position(*positions: str):
-    """FastAPI dependency factory for role-based access control."""
+    """FastAPI dependency: requires position AND at least one verified channel."""
     def checker(user: User = Depends(get_current_user)):
         if user.position not in positions:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Requires one of: {', '.join(positions)}"
+            )
+        # ✅ Verification gate: at least one channel must be verified
+        if not user.email_verified and not user.phone_verified:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account not verified. Verify your email or phone in Configuration to unlock access."
             )
         return user
     return checker
@@ -112,10 +118,14 @@ def seed_admin() -> None:
                 uid="RG-0000-0001",
                 username="admin",
                 email="admin@roadguard.ph",
+                email_verified=True,
+                phone_number=None,
+                phone_verified=False,
                 hashed_password=hash_pw("Admin123!"),
                 position="administrator",
                 is_active=True,
                 mfa_enabled=False,
+                mfa_method=None,
             )
             db.add(admin)
             db.commit()

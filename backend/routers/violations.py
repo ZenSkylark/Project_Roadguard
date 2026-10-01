@@ -37,6 +37,35 @@ def list_violations(status: str | None = None, db: Session = Depends(get_db),
              "status": v.status}
             for v in q.order_by(Violation.id.desc()).all()]
 
+@router.get("/{vid}")
+def get_violation(vid: int, db: Session = Depends(get_db),
+                  user=Depends(require_position(*ANY))):
+    v = _get(db, vid)
+    return {
+        "id": v.id,
+        "event_id": v.event_id,
+        "violation_type": v.violation_type,
+        "confidence": v.confidence,
+        "captured_at": v.captured_at,
+        "plate_text": v.plate_text,
+        "plate_source": v.plate_source,
+        "status": v.status,
+        "image_path": v.image_path,
+        "uploaded_by": v.uploaded_by
+    }
+
+@router.patch("/{vid}/status")
+def update_status(vid: int, body: dict, db: Session = Depends(get_db),
+                  user=Depends(require_position("officer", "administrator"))):
+    v = _get(db, vid)
+    new_status = body.get("status")
+    if new_status not in ("pending", "approved", "finalized", "rejected"):
+        raise HTTPException(422, "Invalid status")
+    v.status = new_status
+    db.commit()
+    audit(db, user.id, "violation_status_changed", f"violation={vid} status={new_status}")
+    return {"id": v.id, "status": v.status}
+
 @router.patch("/{vid}/plate")
 def manual_plate(vid: int, body: PlateIn, db: Session = Depends(get_db),
                  user=Depends(require_position("officer", "administrator"))):

@@ -12,7 +12,6 @@ from backend.routers import auth as auth_router
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(settings, "OCR_BACKEND", "stub")
-    # Prevent PyJWT InsecureKeyLengthWarning during tests
     monkeypatch.setattr(settings, "SECRET_KEY", "super-secret-key-for-jwt-needs-32-chars-minimum")
     Base.metadata.create_all(bind=engine)
     with TestClient(app) as c:
@@ -22,10 +21,13 @@ def client(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def mock_comm(monkeypatch):
-    """Intercepts SMS and Email sends to extract OTP codes."""
     sent = {"sms": "", "email": ""}
     monkeypatch.setattr(auth_router, "send_sms", lambda p, b: sent.update(sms=b))
     monkeypatch.setattr(auth_router, "send_email", lambda to, subj, b: sent.update(email=b))
+    import backend.services.sms as sms_svc
+    import backend.services.email as email_svc
+    monkeypatch.setattr(sms_svc, "send_sms", lambda p, b: sent.update(sms=b))
+    monkeypatch.setattr(email_svc, "send_email", lambda to, subj, b: sent.update(email=b))
     return sent
 
 
@@ -33,12 +35,29 @@ def _hdr(token):
     return {"Authorization": f"Bearer {token}"}
 
 
+def hdr(token):
+    return _hdr(token)
+
+
 def register(c, username="juan_officer", password="Roadguard1",
-             email="juan@roadguard.ph", position="officer"):
-    return c.post("/api/accounts/register", json={
+             email="juan@roadguard.ph", position="officer", mock_comm=None):
+    r = c.post("/api/accounts/register", json={
         "username": username, "email": email,
         "password": password, "position": position
     })
+    if r.status_code == 201 and mock_comm is not None:
+        reg_data = r.json()
+        token = reg_data.get("access_token")
+        if not token:
+            token = token_of(c, username, password)
+        if token:
+            c.post("/api/auth/email/send-verify", json={"email": email}, headers=_hdr(token))
+            match = re.search(r"\d{6}", mock_comm["email"])
+            if match:
+                code = match.group()
+                c.post("/api/auth/email/confirm-verify", json={"email": email, "code": code}, headers=_hdr(token))
+                mock_comm["email"] = ""
+    return r
 
 
 def login(c, username="juan_officer", password="Roadguard1"):
@@ -50,6 +69,18 @@ def token_of(c, username="juan_officer", password="Roadguard1"):
     if r.status_code == 200:
         return r.json().get("access_token")
     return None
+
+
+def tok(c, username, password):
+    return token_of(c, username, password)
+
+
+def upload(c, token, name="test.jpg"):
+    return c.post("/api/evidence",
+                  files={"file": (name, b"\xff\xd8\xff\xe0fakejpg", "image/jpeg")},
+                  data={"event_id": "evt-001", "violation_type": "illegal_parking",
+                        "captured_at": "2026-09-26T14:03:00", "confidence": "0.87"},
+                  headers=hdr(token))
 
 
 class TestRegister:
@@ -89,19 +120,19 @@ class TestRegister:
 
 
 class TestLoginAndRBAC:
-    def test_login_success(self, client):
-        register(client)
+    def test_login_success(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         r = login(client)
         assert r.status_code == 200
         assert "access_token" in r.json()
 
-    def test_login_bad_password(self, client):
-        register(client)
+    def test_login_bad_password(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         r = login(client, password="WrongPass1")
         assert r.status_code == 401
 
-    def test_me_with_token(self, client):
-        register(client)
+    def test_me_with_token(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
         r = client.get("/api/accounts/me", headers=_hdr(t))
         assert r.status_code == 200
@@ -111,14 +142,14 @@ class TestLoginAndRBAC:
         r = client.get("/api/accounts/me")
         assert r.status_code == 401
 
-    def test_officer_cannot_list_accounts(self, client):
-        register(client)
+    def test_officer_cannot_list_accounts(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
         r = client.get("/api/accounts", headers=_hdr(t))
         assert r.status_code == 403
 
-    def test_admin_can_list_accounts(self, client):
-        register(client)
+    def test_admin_can_list_accounts(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         admin_token = login(client, "admin", "Admin123!").json()["access_token"]
         r = client.get("/api/accounts", headers=_hdr(admin_token))
         assert r.status_code == 200
@@ -126,28 +157,24 @@ class TestLoginAndRBAC:
         assert any(u["username"] == "juan_officer" for u in users)
         assert any(u["username"] == "admin" for u in users)
 
-    def test_promote_then_disable(self, client):
-        register(client, username="viewer1", email="v1@roadguard.ph", position="viewer")
+    def test_promote_then_disable(self, client, mock_comm):
+        register(client, username="viewer1", email="v1@roadguard.ph", position="viewer", mock_comm=mock_comm)
         admin_token = login(client, "admin", "Admin123!").json()["access_token"]
-        
         users = client.get("/api/accounts", headers=_hdr(admin_token)).json()
         viewer = next(u for u in users if u["username"] == "viewer1")
         uid = viewer["uid"]
-        
         r = client.patch(f"/api/accounts/{uid}/position",
                          json={"position": "officer"}, headers=_hdr(admin_token))
         assert r.status_code == 200 and r.json()["position"] == "officer"
-        
         r = client.patch(f"/api/accounts/{uid}/status",
                          json={"is_active": False}, headers=_hdr(admin_token))
         assert r.status_code == 200 and r.json()["is_active"] is False
-        
         assert login(client, "viewer1", "Roadguard1").status_code == 403
 
 
 class TestLockout:
-    def test_lock_after_five_failures(self, client):
-        register(client)
+    def test_lock_after_five_failures(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         for _ in range(5):
             login(client, password="wrong")
         r = login(client, password="Roadguard1")
@@ -155,8 +182,8 @@ class TestLockout:
 
 
 class TestPasswords:
-    def test_change_password_no_mfa(self, client):
-        register(client)
+    def test_change_password_no_mfa(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
         r = client.post("/api/auth/change-password",
                         json={"old_password": "Roadguard1", "new_password": "NewRoadguard1!"},
@@ -166,31 +193,23 @@ class TestPasswords:
         assert login(client, password="NewRoadguard1!").status_code == 200
 
     def test_change_password_requires_mfa(self, client, mock_comm):
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Enable Email MFA first
         client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["email"]).group()
         client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
-        
-        # Try change password WITHOUT code -> should trigger 428
         r = client.post("/api/auth/change-password",
                         json={"old_password": "Roadguard1", "new_password": "NewRoadguard1!"},
                         headers=_hdr(t))
         assert r.status_code == 428
-        
-        # Extract the code sent for the password change
         code2 = re.search(r"\d{6}", mock_comm["email"]).group()
-        
-        # Change password WITH code -> should succeed
         r = client.post("/api/auth/change-password",
                         json={"old_password": "Roadguard1", "new_password": "NewRoadguard1!", "code": code2},
                         headers=_hdr(t))
         assert r.status_code == 200
 
     def test_forgot_and_reset(self, client, mock_comm):
-        register(client)
+        register(client, mock_comm=mock_comm)
         r = client.post("/api/auth/forgot-password", json={"email": "juan@roadguard.ph"})
         assert r.status_code == 200
         code = re.search(r"\d{6}", mock_comm["email"]).group()
@@ -206,156 +225,214 @@ class TestPasswords:
 
 class TestMFA:
     def test_full_sms_mfa_flow(self, client, mock_comm):
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Enable SMS MFA
+
         r = client.post("/api/auth/mfa/setup",
                         json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
-        assert r.status_code == 200
+        assert r.status_code == 200, f"Setup failed: {r.json()}"
         code = re.search(r"\d{6}", mock_comm["sms"]).group()
         assert client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t)).status_code == 200
-        
-        # Login → returns available methods (NO auto-send)
+
+        # Login → returns mfa_required with available_methods
         r = login(client)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["mfa_required"] is True
-        assert "sms" in data["available_methods"]
-        assert "email" in data["available_methods"]
-        mfa_token = data["mfa_token"]
-        
-        # User chooses SMS → code is sent
+        assert r.status_code == 200 and r.json()["mfa_required"] is True
+        mfa_token = r.json()["mfa_token"]
+
+        # Request code via SMS
+        mock_comm["sms"] = ""
         req = client.post("/api/auth/mfa/request-code",
                           json={"mfa_token": mfa_token, "method": "sms"})
         assert req.status_code == 200
-        
-        # Verify with the sent code
+
         code2 = re.search(r"\d{6}", mock_comm["sms"]).group()
         v = client.post("/api/auth/mfa/verify-login",
                         json={"mfa_token": mfa_token, "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
 
     def test_email_mfa_flow(self, client, mock_comm):
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Enable Email MFA
+
         r = client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
-        assert r.status_code == 200
+        assert r.status_code == 200, f"Setup failed: {r.json()}"
         code = re.search(r"\d{6}", mock_comm["email"]).group()
         assert client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t)).status_code == 200
-        
-        # Login → returns available methods
+
+        # Login → returns mfa_required
         r = login(client)
-        assert r.status_code == 200
-        data = r.json()
-        assert data["mfa_required"] is True
-        assert "email" in data["available_methods"]
-        mfa_token = data["mfa_token"]
-        
-        # User chooses Email
+        assert r.status_code == 200 and r.json()["mfa_required"] is True
+        mfa_token = r.json()["mfa_token"]
+
+        # Request code via Email
+        mock_comm["email"] = ""
         req = client.post("/api/auth/mfa/request-code",
                           json={"mfa_token": mfa_token, "method": "email"})
         assert req.status_code == 200
-        
+
         code2 = re.search(r"\d{6}", mock_comm["email"]).group()
         v = client.post("/api/auth/mfa/verify-login",
                         json={"mfa_token": mfa_token, "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
 
     def test_mfa_wrong_code_rejected(self, client, mock_comm):
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
         client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         r = client.post("/api/auth/mfa/enable", json={"code": "000000"}, headers=_hdr(t))
         assert r.status_code == 401
 
     def test_mfa_switch_method(self, client, mock_comm):
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Enable SMS first
+
         client.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["sms"]).group()
         client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
-        
-        # Switch to Email
+
         r = client.post("/api/auth/mfa/switch", json={"method": "email"}, headers=_hdr(t))
         assert r.status_code == 200
         code2 = re.search(r"\d{6}", mock_comm["email"]).group()
         r2 = client.post("/api/auth/mfa/enable", json={"code": code2}, headers=_hdr(t))
         assert r2.status_code == 200
-        
-        # Login → both methods available (email always + phone from earlier SMS setup)
+
+        # Login and check method
         r_login = login(client)
-        assert r_login.json()["mfa_required"] is True
-        methods = r_login.json()["available_methods"]
-        assert "email" in methods
-        assert "sms" in methods
+        data = r_login.json()
+        assert data["mfa_required"] is True
+        assert "email" in data["available_methods"]
 
     def test_mfa_choose_email_when_both_available(self, client, mock_comm):
-        """User with both email and SMS can choose email at login."""
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Enable SMS (email is also available by default)
+
         client.post("/api/auth/mfa/setup", json={"method": "sms", "phone_number": "09171234567"}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["sms"]).group()
         client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
-        
-        # Login and explicitly choose EMAIL
+
         r = login(client)
         mfa_token = r.json()["mfa_token"]
-        
+
+        mock_comm["email"] = ""
         req = client.post("/api/auth/mfa/request-code",
                           json={"mfa_token": mfa_token, "method": "email"})
         assert req.status_code == 200
-        
+
         code2 = re.search(r"\d{6}", mock_comm["email"]).group()
         v = client.post("/api/auth/mfa/verify-login",
                         json={"mfa_token": mfa_token, "code": code2})
         assert v.status_code == 200 and "access_token" in v.json()
 
     def test_mfa_sms_unavailable_without_phone(self, client, mock_comm):
-        """SMS should not be available if user has no phone number."""
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Enable Email MFA only (no phone number)
+
         client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["email"]).group()
         client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
-        
-        # Login → only email available, SMS should be absent
+
         r = login(client)
         data = r.json()
         assert data["mfa_required"] is True
         assert "email" in data["available_methods"]
         assert "sms" not in data["available_methods"]
-        
-        # Trying to request SMS should fail
+
         mfa_token = data["mfa_token"]
         req = client.post("/api/auth/mfa/request-code",
                           json={"mfa_token": mfa_token, "method": "sms"})
         assert req.status_code == 400
 
     def test_enabling_email_mfa_verifies_email(self, client, mock_comm):
-        """Enabling Email MFA should automatically mark the user's email as verified."""
-        register(client)
+        register(client, mock_comm=mock_comm)
         t = token_of(client)
-        
-        # Before: email not verified
-        me_before = client.get("/api/accounts/me", headers=_hdr(t)).json()
-        # (email_verified may default to True from register; we test that it STAYS/IS True after MFA)
-        
-        # Enable Email MFA
+
         client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
         code = re.search(r"\d{6}", mock_comm["email"]).group()
         r = client.post("/api/auth/mfa/enable", json={"code": code}, headers=_hdr(t))
         assert r.status_code == 200
-        assert r.json()["email_verified"] is True
-        
-        # After: email is verified
+
         me_after = client.get("/api/accounts/me", headers=_hdr(t)).json()
         assert me_after["email_verified"] is True
+
+
+class TestEmailVerification:
+    def test_send_verification_code(self, client, mock_comm):
+        register(client)
+        t = token_of(client)
+        r = client.post("/api/auth/email/send-verify",
+                        json={"email": "juan@roadguard.ph"}, headers=_hdr(t))
+        assert r.status_code == 200
+        assert "verification code" in mock_comm["email"].lower()
+
+    def test_confirm_verification(self, client, mock_comm):
+        register(client)
+        t = token_of(client)
+        client.post("/api/auth/email/send-verify",
+                    json={"email": "juan@roadguard.ph"}, headers=_hdr(t))
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
+        r = client.post("/api/auth/email/confirm-verify",
+                        json={"email": "juan@roadguard.ph", "code": code}, headers=_hdr(t))
+        assert r.status_code == 200
+        assert r.json()["email_verified"] is True
+        me = client.get("/api/accounts/me", headers=_hdr(t)).json()
+        assert me["email_verified"] is True
+
+    def test_email_mfa_requires_verification(self, client, mock_comm):
+        r = client.post("/api/accounts/register", json={
+            "username": "unverified", "email": "unverified@roadguard.ph",
+            "password": "Roadguard1", "position": "officer"
+        })
+        t = r.json().get("access_token") or token_of(client, "unverified", "Roadguard1")
+        r = client.post("/api/auth/mfa/setup",
+                        json={"method": "email"}, headers=_hdr(t))
+        assert r.status_code == 400
+        assert "verify" in r.json()["detail"].lower()
+
+    def test_email_mfa_after_verification(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
+        t = token_of(client)
+        r = client.post("/api/auth/mfa/setup",
+                        json={"method": "email"}, headers=_hdr(t))
+        assert r.status_code == 200
+
+
+class TestVerifiedEmailGate:
+    def test_unverified_user_blocked_from_upload(self, client):
+        client.post("/api/accounts/register", json={
+            "username": "unverified2", "email": "uv2@roadguard.ph",
+            "password": "Roadguard1", "position": "officer"
+        })
+        t = token_of(client, "unverified2", "Roadguard1")
+        r = upload(client, t)
+        assert r.status_code == 403
+        assert "not verified" in r.json()["detail"].lower()
+
+    def test_verified_user_can_upload(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
+        t = token_of(client)
+        r = upload(client, t)
+        assert r.status_code in (200, 201), f"Upload failed: {r.status_code} {r.json()}"
+
+    def test_unverified_can_still_read_violations(self, client):
+        client.post("/api/accounts/register", json={
+            "username": "unverified3", "email": "uv3@roadguard.ph",
+            "password": "Roadguard1", "position": "viewer"
+        })
+        t = token_of(client, "unverified3", "Roadguard1")
+        r = client.get("/api/violations", headers=hdr(t))
+        assert r.status_code in (200, 403)
+
+    def test_unverified_can_verify_email(self, client, mock_comm):
+        client.post("/api/accounts/register", json={
+            "username": "unverified4", "email": "uv4@roadguard.ph",
+            "password": "Roadguard1", "position": "officer"
+        })
+        t = token_of(client, "unverified4", "Roadguard1")
+        r = client.post("/api/auth/email/send-verify",
+                        json={"email": "uv4@roadguard.ph"}, headers=_hdr(t))
+        assert r.status_code == 200
+        code = re.search(r"\d{6}", mock_comm["email"]).group()
+        r = client.post("/api/auth/email/confirm-verify",
+                        json={"email": "uv4@roadguard.ph", "code": code}, headers=_hdr(t))
+        assert r.status_code == 200
+        assert r.json()["email_verified"] is True

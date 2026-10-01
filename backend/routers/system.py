@@ -14,6 +14,9 @@ from ..services import ocr as ocr_module
 from ..services.retention import purge_old_data
 from ..services.templates import load_ui_settings, save_ui_settings, list_templates
 from ..services.sms import send_sms
+from ..services.email import send_email
+from ..models import Violation
+
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 ALLOWED = ("stub", "paddle", "trained")
@@ -26,15 +29,9 @@ PURPOSE_MESSAGES = {
 
 class OcrBackendIn(BaseModel):
     backend: str
-
 class RetentionIn(BaseModel):
-    days: int = Field(ge=0, le=3650)
+    days: int
     code: str | None = None
-
-    @field_validator("days")
-    @classmethod
-    def _clamp_zero(cls, v: int) -> int:
-        return max(1, v)
 
 class TemplateSettingsIn(BaseModel):
     template_dir: str
@@ -47,15 +44,41 @@ class StepUpChallengeIn(BaseModel):
     purpose: str = Field(pattern="^(purge|retention)$")
 
 
-def _verify_stepup(user, code: str | None, purpose: str):
-    """Verify a purpose-bound one-time code; clears it on success."""
+def _verify_stepup(user, code: str | None, purpose: str, db: Session):
+    """Step-up authentication: require MFA code for sensitive actions."""
     if not user.mfa_enabled:
-        raise HTTPException(403, "Enable MFA before this action.")
-    if not user.otp_hash or not user.otp_expires or user.otp_expires < utcnow():
-        raise HTTPException(401, "Challenge expired - request a new confirmation code.")
-    if user.otp_hash != otp_hash(f"{code or ''}:{purpose}"):
-        raise HTTPException(401, "Invalid confirmation code.")
-    user.otp_hash = user.otp_expires = None
+        raise HTTPException(428, "MFA required for this action. Please enable MFA first.")
+
+    if not code:
+        # No code provided → send OTP and request it
+        otp = new_otp()
+        user.otp_hash = otp_hash(otp)
+        user.otp_expires = utcnow() + timedelta(minutes=5)
+        db.commit()
+
+        if user.mfa_method == "email":
+            send_email(user.email, f"Roadguard {purpose} Code",
+                       f"Your {purpose} code: {otp}\n\nValid for 5 minutes.")
+        else:
+            send_sms(user.phone_number,
+                     f"Roadguard {purpose} code: {otp} (valid 5 minutes)")
+
+        raise HTTPException(428, "MFA code required")
+
+    # Code provided → verify it
+    if not user.otp_hash or not user.otp_expires:
+        raise HTTPException(401, "No OTP issued")
+
+    if user.otp_expires < utcnow():
+        raise HTTPException(401, "OTP expired")
+
+    if user.otp_hash != otp_hash(code):
+        raise HTTPException(401, "Invalid OTP")
+
+    # Clear OTP after successful verification
+    user.otp_hash = None
+    user.otp_expires = None
+    db.commit()
 
 
 # ---------- OCR ----------
@@ -99,7 +122,13 @@ def get_retention(user=Depends(require_position("administrator", "officer", "vie
 @router.put("/retention")
 def set_retention(body: RetentionIn, db: Session = Depends(get_db),
                   user=Depends(require_position("administrator"))):
-    _verify_stepup(user, body.code, "retention")
+    # MFA check FIRST
+    _verify_stepup(user, body.code, "retention", db)
+    
+    # Business logic validation AFTER MFA
+    if body.days < 1 or body.days > 365:
+        raise HTTPException(422, "Retention days must be between 1 and 365")
+    
     settings.RETENTION_DAYS = body.days
     audit(db, user.id, "retention_changed", f"{body.days} days")
     return {"retention_days": settings.RETENTION_DAYS}
@@ -110,6 +139,36 @@ def run_purge(body: PurgeIn,
               db: Session = Depends(get_db)):
     _verify_stepup(user, body.code, "purge")
     return purge_old_data(db, settings.RETENTION_DAYS, actor_id=user.id)
+
+@router.post("/retention/purge")
+def purge_old(body: PurgeIn = None, db: Session = Depends(get_db),
+              user=Depends(require_position("administrator"))):
+    code = body.code if body else None
+    _verify_stepup(user, code, "purge", db)
+
+    from datetime import timedelta
+    cutoff = utcnow() - timedelta(days=settings.RETENTION_DAYS)
+
+    # 🔍 DEBUG: Show ALL violations and their statuses
+    all_violations = db.query(Violation).all()
+    for v in all_violations:
+        print(f"🔍 DEBUG: Violation id={v.id}, status='{v.status}', captured_at={v.captured_at}")
+
+    old_violations = db.query(Violation).filter(
+        Violation.captured_at < cutoff,
+        Violation.status != "pending"
+    ).all()
+
+    print(f"🔍 DEBUG: Purging {len(old_violations)} violations")
+
+    count = 0
+    for v in old_violations:
+        db.delete(v)
+        count += 1
+
+    db.commit()
+    audit(db, user.id, "retention_purge", f"purged={count}")
+    return {"purged": count}
 
 
 # ---------- Templates ----------
