@@ -59,3 +59,33 @@ class AuditLog(Base):
     detail = Column(String, nullable=True)
     ip = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EdgeDevice(Base):
+    __tablename__ = "edge_devices"
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    key_hash = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False)
+    firmware_version = Column(String, nullable=True)
+    last_seen = Column(DateTime, nullable=True)
+    cpu_temp = Column(Float, nullable=True)
+    cpu_load = Column(Float, nullable=True)
+    disk_free = Column(Float, nullable=True)
+    queue_depth = Column(Integer, nullable=True)
+    camera_ok = Column(Boolean, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class EdgeCommand(Base):
+    __tablename__ = "edge_commands"
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String, index=True, nullable=False)
+    command = Column(String, nullable=False)
+    payload = Column(String, nullable=True)
+    nonce = Column(String, unique=True, nullable=False)
+    status = Column(String, default="pending", nullable=False)
+    result = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    acked_at = Column(DateTime, nullable=True)

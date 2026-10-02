@@ -144,7 +144,7 @@ export default function AccountPage({ user, onUserChange }) {
   }
 
 
-
+  
   return (
     <div className="max-w-3xl space-y-6">
       <h1 className="text-2xl font-black text-slate-800">Account</h1>

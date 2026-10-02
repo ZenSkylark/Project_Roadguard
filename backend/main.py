@@ -15,7 +15,7 @@ from .routers import system as system_router
 from .routers import violations as violations_router
 from .services.retention import purge_old_data
 from .ws import manager
-
+from .routers import edge as edge_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -46,6 +46,7 @@ app.include_router(accounts_router.router)
 app.include_router(evidence_router.router)
 app.include_router(violations_router.router)
 app.include_router(system_router.router)
+app.include_router(edge_router.router)
 
 
 @app.get("/", tags=["health"])
