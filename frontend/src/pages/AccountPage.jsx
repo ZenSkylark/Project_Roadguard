@@ -14,17 +14,21 @@ function Row({ k, v }) {
   );
 }
 
+/* ---------- Inline Disable MFA Modal ---------- */
 function DisableMfaModal({ onClose, onDone }) {
   const [step, setStep] = useState("send");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [exhausted, setExhausted] = useState(false);
   const notify = useToast();
 
   async function sendCode() {
     setBusy(true);
     try {
-      await api("/auth/mfa/disable", { method: "POST", body: { code: "" } });
+      await api("/auth/mfa/disable", { method: "POST", body: {} });
       setStep("verify");
+      setCode("");
+      setExhausted(false);
       notify("Confirmation code sent to your device", "info");
     } catch (e) {
       notify(e.message, "error");
@@ -41,6 +45,7 @@ function DisableMfaModal({ onClose, onDone }) {
       onDone();
     } catch (e) {
       notify(e.message, "error");
+      if (/too many|request a new code/i.test(e.message)) setExhausted(true);
     } finally {
       setBusy(false);
     }
@@ -66,12 +71,29 @@ function DisableMfaModal({ onClose, onDone }) {
         ) : (
           <>
             <h3 className="text-lg font-bold text-gray-800 mb-2">📱 Enter Confirmation Code</h3>
+            {exhausted && (
+              <div className="mb-3 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-700 text-sm font-semibold">
+                ⚠️ You ran out of attempts for this code. Press Resend to get a new one.
+              </div>
+            )}
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
-              className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
-            <div className="flex gap-2 mt-4">
-              <button onClick={onClose} className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">Cancel</button>
-              <button onClick={confirm} disabled={busy || code.length !== 6} className="flex-1 px-4 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50">
-                {busy ? "Disabling..." : "Confirm"}
+              disabled={exhausted}
+              className={`w-full border rounded-lg px-3 py-2 mb-4 font-mono text-center text-xl tracking-[0.5em] ${
+                exhausted ? "border-amber-400 bg-amber-50 text-amber-700" : ""
+              }`}
+              autoFocus />
+            <div className="flex gap-2">
+              <button onClick={onClose}
+                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 text-sm">
+                Cancel
+              </button>
+              <button onClick={sendCode} disabled={busy}
+                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-50 text-sm">
+                Resend
+              </button>
+              <button onClick={confirm} disabled={busy || code.length !== 6 || exhausted}
+                className="flex-1 px-3 py-2 rounded-lg bg-red-600 text-white font-semibold hover:bg-red-700 disabled:opacity-50 text-sm">
+                {busy ? "..." : "Confirm"}
               </button>
             </div>
           </>
@@ -81,11 +103,13 @@ function DisableMfaModal({ onClose, onDone }) {
   );
 }
 
+/* ---------- Main Account Page ---------- */
 export default function AccountPage({ user, onUserChange }) {
   const [info, setInfo] = useState({ email: user.email ?? "", phone_number: user.phone_number ?? "" });
   const [pw, setPw] = useState({ old_password: "", new_password: "", confirm: "" });
   const [showMfaChallenge, setShowMfaChallenge] = useState(false);
   const [mfaCode, setMfaCode] = useState("");
+  const [pwOtpExhausted, setPwOtpExhausted] = useState(false);
   const [mfaModal, setMfaModal] = useState(false);
   const [disableModal, setDisableModal] = useState(false);
   const [verifyEmailModal, setVerifyEmailModal] = useState(false);
@@ -106,19 +130,23 @@ export default function AccountPage({ user, onUserChange }) {
       const body = {};
       if (info.email) body.email = info.email;
       if (info.phone_number) body.phone_number = info.phone_number;
-      
-      // Save changes
       await api("/accounts/me", { method: "PATCH", body });
-      
-      // Force full refresh to get updated verification status
       await refreshUser();
-      
-      // Also update local state
-      setInfo({ email: info.email, phone_number: info.phone_number });
-      
       notify("Profile updated", "success");
     } catch (err) {
       notify(err.message, "error");
+    }
+  }
+
+  async function resendPwCode() {
+    try {
+      await api("/auth/change-password", {
+        method: "POST",
+        body: { old_password: pw.old_password, new_password: pw.new_password },
+      });
+    } catch {
+      setPwOtpExhausted(false);
+      notify("New code sent to your device", "info");
     }
   }
 
@@ -131,20 +159,22 @@ export default function AccountPage({ user, onUserChange }) {
         body: { old_password: pw.old_password, new_password: pw.new_password, code: mfaCode || undefined },
       });
       setPw({ old_password: "", new_password: "", confirm: "" });
-      setMfaCode(""); setShowMfaChallenge(false);
+      setMfaCode(""); setShowMfaChallenge(false); setPwOtpExhausted(false);
       notify("Password changed", "success");
     } catch (err) {
-      if (err.message && /mfa code required/i.test(err.message)) {
+      if (/too many|request a new code/i.test(err.message)) {
+        setPwOtpExhausted(true);
+        notify(err.message, "error");
+      } else if (/mfa code required/i.test(err.message)) {
         setShowMfaChallenge(true);
-        notify("MFA code sent to your device", "info");
+        setPwOtpExhausted(false);
+        notify("MFA code sent to your device — enter it to confirm", "info");
       } else {
         notify(err.message, "error");
       }
     }
   }
 
-
-  
   return (
     <div className="max-w-3xl space-y-6">
       <h1 className="text-2xl font-black text-slate-800">Account</h1>
@@ -159,9 +189,7 @@ export default function AccountPage({ user, onUserChange }) {
           <Row k="Last login" v={user.last_login ? new Date(user.last_login).toLocaleString() : "—"} />
         </dl>
 
-        {/* Verification Status */}
         <div className="mt-4 pt-4 border-t border-gray-100 space-y-3">
-          {/* Email Verification */}
           <div className="flex items-center justify-between">
             <div>
               <span className="text-sm text-slate-500">📧 Email: </span>
@@ -177,7 +205,6 @@ export default function AccountPage({ user, onUserChange }) {
             )}
           </div>
 
-          {/* Phone Verification */}
           <div className="flex items-center justify-between">
             <div>
               <span className="text-sm text-slate-500">📱 Phone: </span>
@@ -234,12 +261,12 @@ export default function AccountPage({ user, onUserChange }) {
               </p>
             )}
             <button onClick={() => setMfaModal(true)}
+              disabled={!user.email_verified && !user.phone_number}
               className={`w-full px-4 py-2 rounded-lg text-sm font-semibold ${
                 user.email_verified || user.phone_number
                   ? "bg-amber-500 text-white hover:bg-amber-600"
                   : "bg-gray-300 text-gray-500 cursor-not-allowed"
-              }`}
-              disabled={!user.email_verified && !user.phone_number}>
+              }`}>
               Enable MFA
             </button>
           </div>
@@ -276,11 +303,24 @@ export default function AccountPage({ user, onUserChange }) {
         {showMfaChallenge && (
           <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
             <label className="block text-sm font-semibold text-blue-700 mb-1">MFA Code Required</label>
+            {pwOtpExhausted && (
+              <div className="mb-2 p-2 bg-amber-50 border border-amber-300 rounded text-amber-700 text-xs font-semibold">
+                ⚠️ You ran out of attempts for this code. Press Resend to get a new one.
+              </div>
+            )}
             <input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} maxLength={6}
-              placeholder="6-digit code" className="w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em]" />
+              placeholder="6-digit code" disabled={pwOtpExhausted}
+              className={`w-full border rounded-lg px-3 py-2 font-mono text-center text-xl tracking-[0.5em] ${
+                pwOtpExhausted ? "border-amber-400 bg-amber-50 text-amber-700" : ""
+              }`} />
+            <button type="button" onClick={resendPwCode}
+              className="text-xs text-blue-600 hover:underline mt-1">
+              Resend code
+            </button>
           </div>
         )}
-        <button className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700">
+        <button disabled={pwOtpExhausted}
+          className="px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
           {showMfaChallenge ? "Confirm with MFA Code" : "Update Password"}
         </button>
       </form>

@@ -7,6 +7,7 @@ export default function VerifyPhoneModal({ user, onClose, onVerified }) {
   const [phone, setPhone] = useState(user.phone_number || "");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [exhausted, setExhausted] = useState(false);
   const notify = useToast();
 
   async function savePhoneAndSendCode() {
@@ -16,11 +17,11 @@ export default function VerifyPhoneModal({ user, onClose, onVerified }) {
     }
     setBusy(true);
     try {
-      // Save phone number
       await api("/accounts/me", { method: "PATCH", body: { phone_number: phone } });
-      // Send verification code
       await api("/auth/phone/send-verify", { method: "POST", body: { phone_number: phone } });
       setStep("verify");
+      setCode("");
+      setExhausted(false);
       notify(`Code sent to ${phone}`, "success");
     } catch (e) {
       notify(e.message, "error");
@@ -34,6 +35,8 @@ export default function VerifyPhoneModal({ user, onClose, onVerified }) {
     try {
       await api("/auth/phone/send-verify", { method: "POST", body: { phone_number: user.phone_number } });
       setStep("verify");
+      setCode("");
+      setExhausted(false);
       notify(`Code sent to ${user.phone_number}`, "success");
     } catch (e) {
       notify(e.message, "error");
@@ -53,6 +56,7 @@ export default function VerifyPhoneModal({ user, onClose, onVerified }) {
       onVerified();
     } catch (e) {
       notify(e.message, "error");
+      if (/too many|request a new code/i.test(e.message)) setExhausted(true);
     } finally {
       setBusy(false);
     }
@@ -93,15 +97,29 @@ export default function VerifyPhoneModal({ user, onClose, onVerified }) {
           <>
             <h3 className="text-lg font-bold text-gray-800 mb-2">📱 Enter Verification Code</h3>
             <p className="text-sm text-gray-500 mb-4">Check your phone for the 6-digit code.</p>
+            {exhausted && (
+              <div className="mb-3 p-3 bg-amber-50 border border-amber-300 rounded-lg text-amber-700 text-sm font-semibold">
+                ⚠️ You ran out of attempts for this code. Press Resend to get a new one.
+              </div>
+            )}
             <input value={code} onChange={(e) => setCode(e.target.value)} maxLength={6}
-              placeholder="6-digit code" autoFocus
-              className="w-full border rounded-lg px-3 py-2 mb-4 font-mono text-center text-xl tracking-[0.5em]" />
+              placeholder="6-digit code" disabled={exhausted}
+              className={`w-full border rounded-lg px-3 py-2 mb-4 font-mono text-center text-xl tracking-[0.5em] ${
+                exhausted ? "border-amber-400 bg-amber-50 text-amber-700" : ""
+              }`}
+              autoFocus />
             <div className="flex gap-2">
               <button onClick={() => setStep(user.phone_number ? "send" : "input")}
-                className="flex-1 px-4 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100">Back</button>
-              <button onClick={verify} disabled={busy || code.length !== 6}
-                className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50">
-                {busy ? "Verifying..." : "Verify"}
+                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 text-sm">
+                Back
+              </button>
+              <button onClick={() => (user.phone_number ? sendCodeToExisting() : savePhoneAndSendCode())} disabled={busy}
+                className="flex-1 px-3 py-2 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-100 disabled:opacity-50 text-sm">
+                Resend
+              </button>
+              <button onClick={verify} disabled={busy || code.length !== 6 || exhausted}
+                className="flex-1 px-3 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:opacity-50 text-sm">
+                {busy ? "..." : "Verify"}
               </button>
             </div>
           </>

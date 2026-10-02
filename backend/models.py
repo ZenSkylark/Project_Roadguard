@@ -19,6 +19,7 @@ class User(Base):
     mfa_method = Column(String, nullable=True)
     otp_hash = Column(String, nullable=True)
     otp_expires = Column(DateTime, nullable=True)
+    otp_attempts = Column(Integer, default=0, nullable=False)
     failed_attempts = Column(Integer, default=0, nullable=False)
     locked_until = Column(DateTime, nullable=True)
     last_login = Column(DateTime, nullable=True)
@@ -44,7 +45,7 @@ class Violation(Base):
     evidence_path = Column(String, nullable=True)
     image_path = Column(String, nullable=True)
     thumbnail_path = Column(String, nullable=True)
-    report_path = Column(String, nullable=True)  # ← ADD THIS
+    report_path = Column(String, nullable=True)
     officer_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     uploaded_by = Column(String, nullable=True)
     rejected_reason = Column(String, nullable=True)

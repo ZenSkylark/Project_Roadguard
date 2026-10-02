@@ -1,15 +1,9 @@
-import re
-import logging
+import re, logging, cv2, sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-
-import cv2
 import numpy as np
-
 from ..config import settings
-
-PLATE_RE = re.compile(r"^[A-Z]{3}\s?\d{3,4}$")
 
 @dataclass
 class PlateResult:
@@ -118,3 +112,10 @@ def get_ocr() -> OCRStrategy:
 
 def reset_ocr_cache():
     _cache.clear()
+
+if sys.platform == "win32":
+    import pytesseract
+    _default = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if _default.exists():
+        pytesseract.pytesseract.tesseract_cmd = str(_default)
+PLATE_RE = re.compile(r"^[A-Z]{3}\s?\d{3,4}$")

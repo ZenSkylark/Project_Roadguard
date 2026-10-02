@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
+
 from fastapi import APIRouter, Depends, HTTPException, Request, Form
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
@@ -9,7 +10,6 @@ from ..auth import (
     get_current_user, new_otp, otp_hash, check_lockout, lock_if_needed
 )
 from ..clock import utcnow
-from ..config import settings
 from ..database import get_db
 from ..models import User
 from ..services.email import send_email
@@ -17,15 +17,52 @@ from ..services.sms import send_sms
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+MAX_OTP_ATTEMPTS = 5
 
-# ─── Pydantic Models ───────────────────────────────────────────────────────────
 
-class RegisterIn(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
-    position: str = "viewer"
+# ─── OTP helpers ─────────────────────────────────────────────────────────────
 
+def _otp_fail(user: User, db: Session, msg: str = "Invalid OTP"):
+    """Track wrong attempts; invalidate the code after too many tries."""
+    user.otp_attempts = (user.otp_attempts or 0) + 1
+    if user.otp_attempts >= MAX_OTP_ATTEMPTS:
+        user.otp_hash = None
+        user.otp_expires = None
+        user.otp_attempts = 0
+        db.commit()
+        raise HTTPException(401, "Too many wrong attempts. Request a new code.")
+    db.commit()
+    remaining = MAX_OTP_ATTEMPTS - user.otp_attempts
+    raise HTTPException(401, f"{msg}. {remaining} attempt(s) remaining.")
+
+
+def _clear_otp(user: User):
+    user.otp_hash = None
+    user.otp_expires = None
+    user.otp_attempts = 0
+
+
+def _issue_otp(user: User, db: Session, minutes: int = 5) -> str:
+    code = new_otp()
+    user.otp_hash = otp_hash(code)
+    user.otp_expires = utcnow() + timedelta(minutes=minutes)
+    user.otp_attempts = 0
+    db.commit()
+    return code
+
+
+def _send_mfa_otp(user: User, db: Session, purpose: str = "login", method: str = None):
+    code = _issue_otp(user, db, minutes=5)
+    send_method = method or user.mfa_method
+    if send_method == "email":
+        send_email(user.email, "Roadguard Login Code",
+                   f"Your Roadguard {purpose} code: {code}\n\nValid for 5 minutes.")
+    else:
+        send_sms(user.phone_number,
+                 f"Roadguard {purpose} code: {code} (valid 5 minutes)")
+
+
+# ─── Pydantic models ─────────────────────────────────────────────────────────
 
 class ChangePasswordIn(BaseModel):
     old_password: str
@@ -85,26 +122,7 @@ class PhoneConfirmVerifyIn(BaseModel):
     code: str
 
 
-# ─── Helper ────────────────────────────────────────────────────────────────────
-
-def _send_mfa_otp(user: User, db: Session, purpose: str = "login", method: str = None):
-    """Generate and send OTP via the specified or default MFA method."""
-    code = new_otp()
-    user.otp_hash = otp_hash(code)
-    user.otp_expires = utcnow() + timedelta(minutes=5)
-    db.commit()
-
-    send_method = method or user.mfa_method
-
-    if send_method == "email":
-        send_email(user.email, "Roadguard Login Code",
-                   f"Your Roadguard {purpose} code: {code}\n\nValid for 5 minutes.")
-    else:
-        send_sms(user.phone_number,
-                 f"Roadguard {purpose} code: {code} (valid 5 minutes)")
-
-
-# ─── Login ─────────────────────────────────────────────────────────────────────
+# ─── Login ───────────────────────────────────────────────────────────────────
 
 @router.post("/login")
 def login(request: Request, db: Session = Depends(get_db),
@@ -128,13 +146,11 @@ def login(request: Request, db: Session = Depends(get_db),
 
     if user.mfa_enabled:
         token = create_token({"sub": str(user.id), "mfa_pending": True}, expires_minutes=5)
-
         available_methods = []
         if user.email:
             available_methods.append("email")
         if user.phone_number:
             available_methods.append("sms")
-
         audit(db, user.id, "login_mfa_required", f"methods={','.join(available_methods)}")
         return {
             "mfa_required": True,
@@ -150,11 +166,10 @@ def login(request: Request, db: Session = Depends(get_db),
     return {"access_token": token, "token_type": "bearer"}
 
 
-# ─── MFA Login Flow ────────────────────────────────────────────────────────────
+# ─── MFA login flow ──────────────────────────────────────────────────────────
 
 @router.post("/mfa/request-code")
 def request_mfa_code(body: MfaRequestCodeIn, db: Session = Depends(get_db)):
-    """Send OTP via the user's chosen method after login."""
     try:
         payload = decode_token(body.mfa_token)
     except Exception:
@@ -193,16 +208,13 @@ def verify_mfa_login(body: MfaLoginVerifyIn, request: Request, db: Session = Dep
         raise HTTPException(401, "User not found")
 
     if not user.otp_hash or not user.otp_expires:
-        raise HTTPException(401, "No OTP issued")
-
+        raise HTTPException(400, "No OTP issued")
     if user.otp_expires < utcnow():
         raise HTTPException(401, "OTP expired")
-
     if user.otp_hash != otp_hash(body.code.strip()):
-        raise HTTPException(401, "Invalid OTP")
+        _otp_fail(user, db, "Invalid OTP")
 
-    user.otp_hash = None
-    user.otp_expires = None
+    _clear_otp(user)
     user.last_login = utcnow()
     db.commit()
 
@@ -213,7 +225,6 @@ def verify_mfa_login(body: MfaLoginVerifyIn, request: Request, db: Session = Dep
 
 @router.post("/mfa/resend")
 def resend_mfa(body: MfaResendIn, db: Session = Depends(get_db)):
-    """Resend OTP to the chosen method."""
     try:
         payload = decode_token(body.mfa_token)
     except Exception:
@@ -227,7 +238,7 @@ def resend_mfa(body: MfaResendIn, db: Session = Depends(get_db)):
     return {"message": "Code resent"}
 
 
-# ─── MFA Setup & Management ────────────────────────────────────────────────────
+# ─── MFA setup & management ──────────────────────────────────────────────────
 
 @router.post("/mfa/setup")
 def setup_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -237,17 +248,13 @@ def setup_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Sess
         user.phone_number = body.phone_number
         user.mfa_method = "sms"
     elif body.method == "email":
-        # Email MFA requires email to be verified first
         if not user.email_verified:
             raise HTTPException(400, "Email must be verified before enabling Email MFA")
         user.mfa_method = "email"
     else:
         raise HTTPException(400, "Invalid MFA method")
 
-    code = new_otp()
-    user.otp_hash = otp_hash(code)
-    user.otp_expires = utcnow() + timedelta(minutes=5)
-    db.commit()
+    code = _issue_otp(user, db, minutes=5)
 
     if body.method == "email":
         send_email(user.email, "Roadguard MFA Setup",
@@ -263,18 +270,14 @@ def setup_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Sess
 def enable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not user.otp_hash or not user.otp_expires:
         raise HTTPException(400, "No OTP issued")
-
     if user.otp_expires < utcnow():
         raise HTTPException(401, "OTP expired")
-
     if user.otp_hash != otp_hash(body.code):
-        raise HTTPException(401, "Invalid OTP")
+        _otp_fail(user, db, "Invalid OTP")
 
     user.mfa_enabled = True
-    user.otp_hash = None
-    user.otp_expires = None
+    _clear_otp(user)
 
-    # Auto-verify email if Email MFA was just enabled
     if user.mfa_method == "email":
         user.email_verified = True
 
@@ -283,18 +286,13 @@ def enable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Se
     detail = f"method={user.mfa_method}"
     if user.mfa_method == "email":
         detail += " (email verified)"
-
     audit(db, user.id, "mfa_enabled", detail)
     return {"message": "MFA enabled", "email_verified": user.email_verified}
 
 
 @router.post("/mfa/disable")
-def disable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Initiate MFA disable by sending confirmation code."""
-    code = new_otp()
-    user.otp_hash = otp_hash(code)
-    user.otp_expires = utcnow() + timedelta(minutes=5)
-    db.commit()
+def disable_mfa(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    code = _issue_otp(user, db, minutes=5)
 
     if user.mfa_method == "email":
         send_email(user.email, "Roadguard MFA Disable",
@@ -307,16 +305,16 @@ def disable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: S
 
 @router.post("/mfa/confirm-disable")
 def confirm_disable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not user.otp_hash or user.otp_hash != otp_hash(body.code):
-        raise HTTPException(401, "Invalid code")
-
-    if user.otp_expires and user.otp_expires < utcnow():
+    if not user.otp_hash or not user.otp_expires:
+        raise HTTPException(400, "No OTP issued")
+    if user.otp_expires < utcnow():
         raise HTTPException(401, "Code expired")
+    if user.otp_hash != otp_hash(body.code):
+        _otp_fail(user, db, "Invalid code")
 
     user.mfa_enabled = False
     user.mfa_method = None
-    user.otp_hash = None
-    user.otp_expires = None
+    _clear_otp(user)
     db.commit()
 
     audit(db, user.id, "mfa_disabled")
@@ -325,7 +323,6 @@ def confirm_disable_mfa(body: MfaVerifyIn, user: User = Depends(get_current_user
 
 @router.post("/mfa/switch")
 def switch_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Switch MFA method (requires verification)."""
     if not user.mfa_enabled:
         raise HTTPException(400, "MFA not enabled")
 
@@ -337,10 +334,7 @@ def switch_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Ses
         raise HTTPException(400, "Invalid MFA method")
 
     user.mfa_method = body.method
-    code = new_otp()
-    user.otp_hash = otp_hash(code)
-    user.otp_expires = utcnow() + timedelta(minutes=5)
-    db.commit()
+    code = _issue_otp(user, db, minutes=5)
 
     if body.method == "email":
         send_email(user.email, "Roadguard MFA Method Change",
@@ -352,7 +346,7 @@ def switch_mfa(body: MfaSetupIn, user: User = Depends(get_current_user), db: Ses
     return {"message": "Verification code sent"}
 
 
-# ─── Password Management ───────────────────────────────────────────────────────
+# ─── Password management ─────────────────────────────────────────────────────
 
 @router.post("/change-password")
 def change_password(body: ChangePasswordIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -366,14 +360,13 @@ def change_password(body: ChangePasswordIn, user: User = Depends(get_current_use
             raise HTTPException(428, "MFA code required")
 
         if not user.otp_hash or not user.otp_expires:
-            raise HTTPException(401, "No OTP issued")
+            raise HTTPException(400, "No OTP issued")
         if user.otp_expires < utcnow():
             raise HTTPException(401, "OTP expired")
         if user.otp_hash != otp_hash(body.code):
-            raise HTTPException(401, "Invalid OTP")
+            _otp_fail(user, db, "Invalid OTP")
 
-        user.otp_hash = None
-        user.otp_expires = None
+        _clear_otp(user)
 
     user.hashed_password = hash_pw(body.new_password)
     db.commit()
@@ -390,7 +383,6 @@ def forgot_password(body: ForgotPasswordIn, db: Session = Depends(get_db)):
         user.reset_hash = otp_hash(code)
         user.reset_expires = utcnow() + timedelta(minutes=15)
         db.commit()
-
         send_email(user.email, "Roadguard Password Reset",
                    f"Your password reset code: {code}\n\nValid for 15 minutes.")
 
@@ -403,10 +395,8 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
 
     if not user or not user.reset_hash:
         raise HTTPException(400, "Invalid reset request")
-
     if user.reset_expires < utcnow():
         raise HTTPException(401, "Reset code expired")
-
     if user.reset_hash != otp_hash(body.code):
         raise HTTPException(401, "Invalid reset code")
 
@@ -419,65 +409,51 @@ def reset_password(body: ResetPasswordIn, db: Session = Depends(get_db)):
     return {"message": "Password reset successful"}
 
 
-# ─── Email Verification ────────────────────────────────────────────────────────
+# ─── Email verification ──────────────────────────────────────────────────────
 
 @router.post("/email/send-verify")
 def send_email_verification(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Send verification code to user's email."""
-    code = new_otp()
-    user.otp_hash = otp_hash(code)
-    user.otp_expires = utcnow() + timedelta(minutes=15)
-    db.commit()
-
+    code = _issue_otp(user, db, minutes=15)
     send_email(user.email, "Roadguard Email Verification",
                f"Your email verification code: {code}\n\nValid for 15 minutes.")
-
     audit(db, user.id, "email_verification_sent")
     return {"message": "Verification code sent to your email"}
 
 
 @router.post("/email/confirm-verify")
 def confirm_email_verification(body: MfaVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Confirm email verification code."""
     if not user.otp_hash or not user.otp_expires:
         raise HTTPException(400, "No verification code issued")
     if user.otp_expires < utcnow():
         raise HTTPException(401, "Verification code expired")
     if user.otp_hash != otp_hash(body.code):
-        raise HTTPException(401, "Invalid verification code")
+        _otp_fail(user, db, "Invalid verification code")
 
     user.email_verified = True
-    user.otp_hash = None
-    user.otp_expires = None
+    _clear_otp(user)
     db.commit()
 
     audit(db, user.id, "email_verified")
     return {"message": "Email verified successfully", "email_verified": True}
 
-# ─── Phone Verification ────────────────────────────────────────────────────────
+
+# ─── Phone verification ──────────────────────────────────────────────────────
 
 @router.post("/phone/send-verify")
 def send_phone_verification(body: PhoneVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Send verification code to user's phone number."""
     if not body.phone_number:
         raise HTTPException(400, "Phone number is required")
 
     user.phone_number = body.phone_number
-    code = new_otp()
-    user.otp_hash = otp_hash(code)
-    user.otp_expires = utcnow() + timedelta(minutes=15)
-    db.commit()
-
+    code = _issue_otp(user, db, minutes=15)
     send_sms(body.phone_number,
              f"Your Roadguard phone verification code: {code} (valid 15 minutes)")
-
     audit(db, user.id, "phone_verification_sent")
     return {"message": "Verification code sent to your phone"}
 
 
 @router.post("/phone/confirm-verify")
 def confirm_phone_verification(body: PhoneConfirmVerifyIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Confirm phone verification code."""
     if user.phone_number != body.phone_number:
         raise HTTPException(400, "Phone number does not match")
     if not user.otp_hash or not user.otp_expires:
@@ -485,11 +461,10 @@ def confirm_phone_verification(body: PhoneConfirmVerifyIn, user: User = Depends(
     if user.otp_expires < utcnow():
         raise HTTPException(401, "Verification code expired")
     if user.otp_hash != otp_hash(body.code):
-        raise HTTPException(401, "Invalid verification code")
+        _otp_fail(user, db, "Invalid verification code")
 
     user.phone_verified = True
-    user.otp_hash = None
-    user.otp_expires = None
+    _clear_otp(user)
     db.commit()
 
     audit(db, user.id, "phone_verified")

@@ -354,6 +354,26 @@ class TestMFA:
         me_after = client.get("/api/accounts/me", headers=_hdr(t)).json()
         assert me_after["email_verified"] is True
 
+    def test_otp_attempt_limit_forces_resend(self, client, mock_comm):
+        register(client, mock_comm=mock_comm)
+        t = token_of(client)
+        client.post("/api/auth/mfa/setup", json={"method": "email"}, headers=_hdr(t))
+        real = re.search(r"\d{6}", mock_comm["email"]).group()
+
+        for _ in range(4):
+            r = client.post("/api/auth/mfa/enable", json={"code": "000000"}, headers=_hdr(t))
+            assert r.status_code == 401
+            assert "remaining" in r.json()["detail"].lower()
+
+        # 5th wrong attempt kills the code
+        r = client.post("/api/auth/mfa/enable", json={"code": "000000"}, headers=_hdr(t))
+        assert r.status_code == 401
+        assert "new code" in r.json()["detail"].lower()
+
+        # Even the real code is dead until a resend
+        r = client.post("/api/auth/mfa/enable", json={"code": real}, headers=_hdr(t))
+        assert r.status_code == 400
+
 
 class TestEmailVerification:
     def test_send_verification_code(self, client, mock_comm):
