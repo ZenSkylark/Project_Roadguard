@@ -1,15 +1,29 @@
+# ── Core API ─────────────────────────────────────────────
 fastapi
 uvicorn[standard]
 sqlalchemy
 pydantic-settings
 email-validator
-python-jose[cryptography]
-bcrypt
-pytest
-httpx
 python-multipart
+
+# ── Auth & Security ──────────────────────────────────────
+python-jose[cryptography]
+PyJWT
+bcrypt
+
+# ── Outbound HTTP (edge uplink, provider APIs, tests) ────
+httpx
+
+# ── Reports ──────────────────────────────────────────────
 python-docx
+
+# ── OCR & Imaging ────────────────────────────────────────
 onnxruntime
 opencv-python
 paddlepaddle==2.6.2
 paddleocr==2.9.1
+pytesseract
+Pillow
+
+# ── Testing ──────────────────────────────────────────────
+pytest

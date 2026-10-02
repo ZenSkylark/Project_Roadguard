@@ -64,3 +64,11 @@ It is most the Server Side
 5.  Copy and Paste It
 6.  Your Done, Try to Test out using `python tools\test_mailtrap_direct.py`
 
+
+# System Dependencies that Weren't Included in the pip
+
+### System dependencies (not installed by pip)
+- **Tesseract OCR binary** — needed by `tools/ocr_*.py`
+  Installer: https://github.com/UB-Mannheim/tesseract/wiki (default path auto-detected)
+- **PaddleOCR models** — downloaded automatically on first backend OCR use
+
